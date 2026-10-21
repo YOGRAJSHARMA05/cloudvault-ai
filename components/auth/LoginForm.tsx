@@ -1,0 +1,77 @@
+"use client";
+
+import Link from "next/link";
+import { useActionState } from "react";
+import { loginAction } from "@/app/actions/auth";
+import { AuthField } from "@/components/auth/AuthField";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
+
+export function LoginForm({ googleEnabled }: { googleEnabled: boolean }) {
+  const [state, action, pending] = useActionState(loginAction, null);
+
+  return (
+    <section className="rounded-3xl border border-white/10 bg-slate-900/75 p-7 shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-9">
+      <div className="mb-8">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-300">
+          Welcome back
+        </p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">
+          Sign in to CloudVault
+        </h1>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
+          Your workspace and files are right where you left them.
+        </p>
+      </div>
+
+      <form action={action} className="space-y-5" noValidate>
+        <AuthField
+          autoComplete="email"
+          error={state?.fieldErrors?.email?.[0]}
+          id="email"
+          label="Email address"
+          name="email"
+          placeholder="you@example.com"
+          required
+          type="email"
+        />
+        <AuthField
+          autoComplete="current-password"
+          error={state?.fieldErrors?.password?.[0]}
+          id="password"
+          label="Password"
+          name="password"
+          placeholder="Enter your password"
+          required
+          type="password"
+        />
+
+        {state?.error ? (
+          <p
+            aria-live="polite"
+            className="rounded-xl border border-rose-400/20 bg-rose-400/5 px-4 py-3 text-sm text-rose-200"
+            role="alert"
+          >
+            {state.error}
+          </p>
+        ) : null}
+
+        <button
+          className="flex min-h-12 w-full items-center justify-center rounded-xl bg-blue-500 px-5 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition hover:bg-blue-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-wait disabled:opacity-60"
+          disabled={pending}
+          type="submit"
+        >
+          {pending ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+
+      <GoogleSignInButton enabled={googleEnabled} />
+
+      <p className="mt-7 text-center text-sm text-slate-400">
+        New to CloudVault?{" "}
+        <Link className="font-medium text-blue-300 hover:text-blue-200" href="/signup">
+          Create an account
+        </Link>
+      </p>
+    </section>
+  );
+}
