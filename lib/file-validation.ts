@@ -36,6 +36,7 @@ export const fileUploadMetadataSchema = z.object({
   fileName: z.string().trim().min(1).max(1024),
   fileSize: z.number().int().positive().max(25 * 1024 * 1024),
   fileType: z.string().max(128),
+  folderId: z.string().cuid().nullable(),
 });
 
 export function getFilePageOffset(page: number): number {

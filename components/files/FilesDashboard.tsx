@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -19,24 +20,44 @@ import {
 import {
   deleteUserFile,
   getDashboardStats,
-  listUserFiles,
   renameUserFile,
   toggleFileFavorite,
   uploadUserFile,
 } from "@/app/actions/files";
+import {
+  createFolder,
+  deleteFolder,
+  getFolderContents,
+  getRecentFiles,
+  getFolderTree,
+  moveFileToFolder,
+  moveFolder,
+  renameFolder,
+  searchWorkspace,
+} from "@/app/actions/folders";
 import type { DashboardStats, FileRecordView } from "@/types/files";
+import type { FolderBreadcrumb, FolderTreeNode, FolderView, WorkspaceSearchResults } from "@/types/folders";
 
 type Props = {
   userName: string | null;
   initialFiles: FileRecordView[];
   initialTotal: number;
   initialStats: DashboardStats;
+  initialFolders: FolderView[];
+  initialBreadcrumbs: FolderBreadcrumb[];
+  initialFolderTree: FolderTreeNode[];
+  currentFolderId: string | null;
+  currentFolderName: string | null;
+  initialFolderTotal: number;
   signOutAction: () => Promise<void>;
 };
 
 type DialogState =
   | { type: "rename"; file: FileRecordView }
   | { type: "delete"; file: FileRecordView }
+  | { type: "create-folder" }
+  | { type: "rename-folder"; folder: FolderView }
+  | { type: "delete-folder"; folder: FolderView }
   | { type: "details"; file: FileRecordView }
   | null;
 
@@ -120,9 +141,28 @@ function StatIcon({ kind }: { kind: "storage" | "files" | "favorites" | "average
   );
 }
 
-export function FilesDashboard({ userName, initialFiles, initialTotal, initialStats, signOutAction }: Props) {
+export function FilesDashboard({
+  userName,
+  initialFiles,
+  initialTotal,
+  initialStats,
+  initialFolders,
+  initialBreadcrumbs,
+  initialFolderTree,
+  currentFolderId,
+  currentFolderName,
+  initialFolderTotal,
+  signOutAction,
+}: Props) {
+  const router = useRouter();
   const [files, setFiles] = useState(initialFiles);
   const [total, setTotal] = useState(initialTotal);
+  const [folders, setFolders] = useState(initialFolders);
+  const [folderTotal, setFolderTotal] = useState(initialFolderTotal);
+  const [breadcrumbs, setBreadcrumbs] = useState(initialBreadcrumbs);
+  const [folderTree, setFolderTree] = useState(initialFolderTree);
+  const [searchResults, setSearchResults] = useState<WorkspaceSearchResults | null>(null);
+  const [showRecent, setShowRecent] = useState(false);
   const [stats, setStats] = useState(initialStats);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<FileCategory>("all");
@@ -135,35 +175,49 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
   const [uploadCount, setUploadCount] = useState(0);
   const [uploadCurrent, setUploadCurrent] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [folderColor, setFolderColor] = useState("blue");
+  const [folderIcon, setFolderIcon] = useState("folder");
+  const [folderActionError, setFolderActionError] = useState("");
+  const [draggedItem, setDraggedItem] = useState<{ type: "file" | "folder"; id: string } | null>(null);
   const [busy, startTransition] = useTransition();
   const fileInput = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async (nextPage = page) => {
     try {
-      const [result, nextStats] = await Promise.all([
-        listUserFiles({ query, category, sort, page: nextPage }),
+      const [result, nextStats, nextTree] = await Promise.all([
+        getFolderContents({ folderId: currentFolderId, query, category, sort, page: nextPage }),
         getDashboardStats(),
+        getFolderTree(),
       ]);
       setFiles(result.files);
-      setTotal(result.total);
+      setTotal(result.totalFiles);
+      setFolders(result.folders);
+      setFolderTotal(result.totalFolders);
+      setBreadcrumbs(result.breadcrumbs);
+      setFolderTree(nextTree);
       setPage(nextPage);
       setStats(nextStats);
       setListError("");
     } catch {
       setListError("Please check your connection and try again.");
     }
-  }, [category, page, query, sort]);
+  }, [category, currentFolderId, page, query, sort]);
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (query.trim()) return;
     searchTimer.current = setTimeout(() => {
       const nextPage = 1;
       setListError("");
       startTransition(() => {
-        void listUserFiles({ query, category, sort, page: nextPage }).then((result) => {
+        void getFolderContents({ folderId: currentFolderId, query, category, sort, page: nextPage }).then((result) => {
           setFiles(result.files);
-          setTotal(result.total);
+          setTotal(result.totalFiles);
+          setFolders(result.folders);
+          setFolderTotal(result.totalFolders);
+          setBreadcrumbs(result.breadcrumbs);
           setPage(nextPage);
         }).catch(() => setListError("Please check your connection and try again."));
       });
@@ -171,7 +225,27 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [category, query, sort]);
+  }, [category, currentFolderId, query, sort]);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      startTransition(() => {
+        void searchWorkspace({ query }).then((results) => {
+          if (!cancelled) setSearchResults(results);
+        }).catch(() => {
+          if (!cancelled) setListError("Search failed. Please try again.");
+        });
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
 
   useEffect(() => {
     if (!toast) return;
@@ -196,6 +270,7 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
         }
         const data = new FormData();
         data.set("file", file);
+        if (currentFolderId) data.set("folderId", currentFolderId);
         try {
           const result = await uploadUserFile(data);
           if (!result.success) setToast(`${file.name}: ${result.message}`);
@@ -224,6 +299,52 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
         await refresh();
       }
     });
+  }
+
+  function runFolderAction(action: () => Promise<{ success: boolean; message: string }>) {
+    startTransition(async () => {
+      const result = await action();
+      setToast(result.message);
+      setFolderActionError(result.success ? "" : result.message);
+      if (result.success) {
+        setDialog(null);
+        setFolderName("");
+        await refresh(1);
+      }
+    });
+  }
+
+  function openFolder(folderId: string | null) {
+    setQuery("");
+    setShowRecent(false);
+    setPage(1);
+    router.push(folderId ? `/dashboard?folder=${encodeURIComponent(folderId)}` : "/dashboard");
+  }
+
+  function dropIntoFolder(folderId: string | null) {
+    if (!draggedItem) return;
+    if (draggedItem.type === "file") {
+      runFileAction(() => moveFileToFolder({ fileId: draggedItem.id, folderId }));
+    } else if (draggedItem.id !== folderId) {
+      runFolderAction(() => moveFolder({ folderId: draggedItem.id, parentFolderId: folderId }));
+    }
+    setDraggedItem(null);
+  }
+
+  function submitCreateFolder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    runFolderAction(() => createFolder({
+      name: folderName,
+      parentFolderId: currentFolderId,
+      color: folderColor,
+      icon: folderIcon,
+    }));
+  }
+
+  function submitRenameFolder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (dialog?.type !== "rename-folder") return;
+    runFolderAction(() => renameFolder({ folderId: dialog.folder.id, name: folderName }));
   }
 
   function submitRename(event: FormEvent<HTMLFormElement>) {
@@ -262,7 +383,7 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
                 aria-current={category === item.value ? "page" : undefined}
                 className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-sm transition ${category === item.value ? "bg-blue-500/10 font-medium text-blue-200" : "text-slate-400 hover:bg-white/5 hover:text-white"}`}
                 key={item.value}
-                onClick={() => { setCategory(item.value); setPage(1); }}
+                onClick={() => { setShowRecent(false); setCategory(item.value); setPage(1); }}
                 type="button"
               >
                 <CategoryGlyph category={item.value} />
@@ -270,6 +391,27 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
               </button>
             ))}
           </nav>
+
+          <div className="mt-7">
+            <div className="mb-2 flex items-center justify-between px-3">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Folders</span>
+              <button aria-label="Create folder" className="rounded p-1 text-slate-500 transition hover:bg-white/5 hover:text-white" onClick={() => setDialog({ type: "create-folder" })} type="button">+</button>
+            </div>
+            <nav aria-label="Folder tree" className="max-h-[38vh] space-y-1 overflow-y-auto">
+              <button aria-current={!currentFolderId ? "page" : undefined} className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${!currentFolderId ? "bg-white/5 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => openFolder(null)} type="button">⌂ My Files</button>
+              <FolderTreeList folders={folderTree} currentFolderId={currentFolderId} onOpen={openFolder} onDrop={dropIntoFolder} />
+              <button className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${showRecent ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => {
+                setQuery("");
+                setShowRecent(true);
+                startTransition(async () => {
+                  const recent = await getRecentFiles();
+                  setFiles(recent.files);
+                  setTotal(recent.total);
+                  setFolders([]);
+                });
+              }} type="button"><span aria-hidden="true" className="w-4 text-center">◷</span>Recent</button>
+            </nav>
+          </div>
 
           <div className="mt-auto rounded-2xl border border-white/8 bg-white/[0.025] p-4">
             <div className="flex items-center justify-between text-xs">
@@ -311,13 +453,26 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
             <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
               <div>
                 <p className="text-sm text-slate-500">Your workspace</p>
-                <h1 className="mt-1 text-3xl font-semibold tracking-tight text-white">My files</h1>
+                <h1 className="mt-1 text-3xl font-semibold tracking-tight text-white">{currentFolderName ?? "My files"}</h1>
                 <p className="mt-2 text-sm text-slate-400">A secure home for everything you need.</p>
               </div>
               <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-500 px-4 text-sm font-semibold text-white shadow-lg shadow-blue-950/25 transition hover:bg-blue-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 lg:hidden" onClick={() => fileInput.current?.click()} type="button">
                 <span aria-hidden="true" className="text-lg">+</span> Upload files
               </button>
+              <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/10 px-4 text-sm font-medium text-slate-200 transition hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300" onClick={() => { setFolderName(""); setDialog({ type: "create-folder" }); }} type="button">
+                <span aria-hidden="true">＋</span> New folder
+              </button>
             </div>
+
+            <nav aria-label="Breadcrumb" className="mt-5 flex flex-wrap items-center gap-2 text-sm">
+              <button className={`rounded-md px-1.5 py-1 transition hover:bg-white/5 ${currentFolderId ? "text-slate-400 hover:text-white" : "font-medium text-white"}`} onClick={() => openFolder(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); dropIntoFolder(null); }} type="button">My Files</button>
+              {breadcrumbs.map((crumb, index) => (
+                <span className="flex items-center gap-2" key={crumb.id}>
+                  <span aria-hidden="true" className="text-slate-600">/</span>
+                  <button aria-current={index === breadcrumbs.length - 1 ? "page" : undefined} className={`rounded-md px-1.5 py-1 transition hover:bg-white/5 ${index === breadcrumbs.length - 1 ? "font-medium text-white" : "text-slate-400 hover:text-white"}`} onClick={() => openFolder(crumb.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); dropIntoFolder(crumb.id); }} type="button">{crumb.name}</button>
+                </span>
+              ))}
+            </nav>
 
             <input
               accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp"
@@ -361,13 +516,19 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
             <section aria-labelledby="files-heading" className="mt-9">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-white" id="files-heading">{categories.find((item) => item.value === category)?.label}</h2>
-                  <p className="mt-1 text-xs text-slate-500">{total.toLocaleString()} {total === 1 ? "file" : "files"}</p>
+                  <h2 className="text-lg font-semibold text-white" id="files-heading">{query ? "Search results" : showRecent ? "Recent files" : categories.find((item) => item.value === category)?.label}</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {query && searchResults
+                      ? `${searchResults.totalFolders.toLocaleString()} folders · ${searchResults.totalFiles.toLocaleString()} files`
+                      : showRecent
+                        ? `${total.toLocaleString()} recent files`
+                        : `${folderTotal.toLocaleString()} ${folderTotal === 1 ? "folder" : "folders"}${total ? ` · ${total.toLocaleString()} ${total === 1 ? "file" : "files"}` : ""}`}
+                  </p>
                 </div>
                 <div className="flex flex-col gap-3 sm:flex-row">
                   <input aria-label="Search files" className="h-10 rounded-xl border border-white/8 bg-white/[0.03] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-blue-400/50 md:hidden" id="mobile-file-search" onChange={(event) => setQuery(event.target.value)} placeholder="Search files…" value={query} />
                   <label className="sr-only" htmlFor="file-filter">Filter files</label>
-                  <select className="h-10 rounded-xl border border-white/8 bg-[#0d1422] px-3 text-sm text-slate-300 outline-none focus:border-blue-400/50" id="file-filter" onChange={(event) => { setCategory(event.target.value as FileCategory); setPage(1); }} value={category}>
+                  <select className="h-10 rounded-xl border border-white/8 bg-[#0d1422] px-3 text-sm text-slate-300 outline-none focus:border-blue-400/50" id="file-filter" onChange={(event) => { setShowRecent(false); setCategory(event.target.value as FileCategory); setPage(1); }} value={category}>
                     {categories.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
                   <label className="sr-only" htmlFor="file-sort">Sort files</label>
@@ -377,7 +538,47 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
                 </div>
               </div>
 
-              <div className="mt-4 overflow-hidden rounded-2xl border border-white/8 bg-white/[0.02]">
+              {showRecent ? (
+                <div className="mt-4 overflow-hidden rounded-2xl border border-white/8 bg-white/[0.02]">
+                  {files.length ? <ul className="divide-y divide-white/[0.055]">{files.map((file) => <FileRow file={file} key={file.id} onDragStart={() => setDraggedItem({ type: "file", id: file.id })} onDragEnd={() => setDraggedItem(null)} onDelete={() => setDialog({ type: "delete", file })} onDetails={() => setDialog({ type: "details", file })} onFavorite={() => runFileAction(() => toggleFileFavorite({ fileId: file.id }))} onRename={() => { setRenameValue(file.originalName.replace(/\.[^.]+$/, "")); setDialog({ type: "rename", file }); }} />)}</ul> : <EmptyFiles category="all" onUpload={() => fileInput.current?.click()} query="" />}
+                </div>
+              ) : query && searchResults ? (
+                <div aria-label="Combined search results" className="mt-4 space-y-4">
+                  {searchResults.folders.length ? (
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {searchResults.folders.map((folder) => (
+                        <FolderCard folder={folder} key={folder.id} onOpen={() => openFolder(folder.id)} onRename={() => { setFolderName(folder.name); setDialog({ type: "rename-folder", folder }); }} onDelete={() => setDialog({ type: "delete-folder", folder })} onDragStart={() => setDraggedItem({ type: "folder", id: folder.id })} onDragEnd={() => setDraggedItem(null)} onDrop={() => dropIntoFolder(folder.id)} />
+                      ))}
+                    </div>
+                  ) : null}
+                  {searchResults.files.length ? (
+                    <div className="overflow-hidden rounded-2xl border border-white/8 bg-white/[0.02]">
+                      <ul className="divide-y divide-white/[0.055]">
+                        {searchResults.files.map((file) => <FileRow file={file} key={file.id} onDragStart={() => setDraggedItem({ type: "file", id: file.id })} onDragEnd={() => setDraggedItem(null)} onDelete={() => setDialog({ type: "delete", file })} onDetails={() => setDialog({ type: "details", file })} onFavorite={() => runFileAction(() => toggleFileFavorite({ fileId: file.id }))} onRename={() => { setRenameValue(file.originalName.replace(/\.[^.]+$/, "")); setDialog({ type: "rename", file }); }} />)}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {!searchResults.files.length && !searchResults.folders.length ? <EmptyFiles query={query} category={category} onUpload={() => fileInput.current?.click()} /> : null}
+                </div>
+              ) : !query && folders.length ? (
+                <div aria-label="Folders" className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {folders.map((folder) => (
+                    <FolderCard
+                      folder={folder}
+                      key={folder.id}
+                      onOpen={() => openFolder(folder.id)}
+                      onRename={() => { setFolderName(folder.name); setDialog({ type: "rename-folder", folder }); }}
+                      onDelete={() => setDialog({ type: "delete-folder", folder })}
+                      onDragStart={() => setDraggedItem({ type: "folder", id: folder.id })}
+                      onDragEnd={() => setDraggedItem(null)}
+                      onDrop={() => dropIntoFolder(folder.id)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              {!query ? <>
+              <div className="mt-4 overflow-hidden rounded-2xl border border-white/8 bg-white/[0.02]" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); dropIntoFolder(currentFolderId); }}>
                 <div className="hidden grid-cols-[minmax(220px,1fr)_110px_100px_130px_150px] gap-4 border-b border-white/7 px-5 py-3 text-[11px] font-medium uppercase tracking-wider text-slate-500 md:grid">
                   <span>File name</span><span>Type</span><span>Size</span><span>Created</span><span className="text-right">Actions</span>
                 </div>
@@ -404,6 +605,8 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
                       <FileRow
                         file={file}
                         key={file.id}
+                        onDragStart={() => setDraggedItem({ type: "file", id: file.id })}
+                        onDragEnd={() => setDraggedItem(null)}
                         onDelete={() => setDialog({ type: "delete", file })}
                         onDetails={() => setDialog({ type: "details", file })}
                         onFavorite={() => runFileAction(() => toggleFileFavorite({ fileId: file.id }))}
@@ -412,14 +615,12 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
                     ))}
                   </ul>
                 ) : (
-                  <div className="px-6 py-16 text-center">
-                    <span className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-blue-400/10 text-blue-300">
-                      <StatIcon kind="files" />
-                    </span>
-                    <h3 className="mt-5 text-base font-semibold text-white">{query ? "No files match your search" : category === "favorites" ? "No favorites yet" : "Your files will appear here"}</h3>
-                    <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">{query ? "Try a different name, file type, or extension." : "Upload your first document or image to get your workspace started."}</p>
-                    {!query && category === "all" ? <button className="mt-5 text-sm font-medium text-blue-300 hover:text-blue-200" onClick={() => fileInput.current?.click()} type="button">Upload a file</button> : null}
-                  </div>
+                  <EmptyFiles
+                    category={category}
+                    onCreateFolder={() => { setFolderName(""); setDialog({ type: "create-folder" }); }}
+                    onUpload={() => fileInput.current?.click()}
+                    query={query}
+                  />
                 )}
               </div>
 
@@ -432,6 +633,7 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
                   </div>
                 </div>
               ) : null}
+              </> : null}
             </section>
           </main>
         </div>
@@ -443,13 +645,35 @@ export function FilesDashboard({ userName, initialFiles, initialTotal, initialSt
 
       {dialog ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
-          <section aria-labelledby="file-dialog-title" aria-modal="true" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101827] p-6 shadow-2xl" role="dialog">
+          <section aria-labelledby="file-dialog-title" aria-modal="true" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101827] p-6 shadow-2xl" role="dialog" onKeyDown={(event) => { if (event.key === "Escape") setDialog(null); }}>
             <div className="flex items-start justify-between gap-4">
-              <h2 className="text-lg font-semibold text-white" id="file-dialog-title">{dialog.type === "rename" ? "Rename file" : dialog.type === "delete" ? "Delete file?" : "File information"}</h2>
+              <h2 className="text-lg font-semibold text-white" id="file-dialog-title">{dialog.type === "rename" ? "Rename file" : dialog.type === "delete" ? "Delete file?" : dialog.type === "create-folder" ? "Create a folder" : dialog.type === "rename-folder" ? "Rename folder" : dialog.type === "delete-folder" ? "Delete folder?" : "File information"}</h2>
               <button aria-label="Close dialog" className="rounded-lg px-2 py-1 text-slate-500 hover:bg-white/5 hover:text-white" onClick={() => setDialog(null)} type="button">×</button>
             </div>
+            {folderActionError && (dialog.type === "create-folder" || dialog.type === "rename-folder" || dialog.type === "delete-folder") ? <p aria-live="polite" className="mt-4 rounded-xl border border-rose-400/20 bg-rose-400/5 px-3 py-2.5 text-sm text-rose-200" role="alert">{folderActionError}</p> : null}
 
-            {dialog.type === "rename" ? (
+            {dialog.type === "create-folder" ? (
+              <form className="mt-5 space-y-4" onSubmit={submitCreateFolder}>
+                <label className="block text-sm text-slate-300" htmlFor="folder-name">Folder name</label>
+                <input autoFocus className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-400/50" id="folder-name" maxLength={80} onChange={(event) => setFolderName(event.target.value)} placeholder="e.g. Project files" required value={folderName} />
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs text-slate-400">Color<select className="mt-1.5 w-full rounded-lg border border-white/10 bg-slate-950 px-2 py-2 text-sm text-slate-200" onChange={(event) => setFolderColor(event.target.value)} value={folderColor}><option value="blue">Blue</option><option value="violet">Violet</option><option value="amber">Amber</option><option value="emerald">Emerald</option><option value="rose">Rose</option><option value="slate">Slate</option></select></label>
+                  <label className="text-xs text-slate-400">Icon<select className="mt-1.5 w-full rounded-lg border border-white/10 bg-slate-950 px-2 py-2 text-sm text-slate-200" onChange={(event) => setFolderIcon(event.target.value)} value={folderIcon}><option value="folder">Folder</option><option value="briefcase">Work</option><option value="image">Images</option><option value="document">Documents</option><option value="star">Favorite</option></select></label>
+                </div>
+                <div className="flex justify-end gap-2 pt-2"><DialogButton onClick={() => setDialog(null)}>Cancel</DialogButton><DialogButton disabled={busy || !folderName.trim()} primary type="submit">{busy ? "Creating…" : "Create folder"}</DialogButton></div>
+              </form>
+            ) : dialog.type === "rename-folder" ? (
+              <form className="mt-5" onSubmit={submitRenameFolder}>
+                <label className="mb-2 block text-sm text-slate-300" htmlFor="rename-folder">Folder name</label>
+                <input autoFocus className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-400/50" id="rename-folder" maxLength={80} onChange={(event) => setFolderName(event.target.value)} required value={folderName} />
+                <div className="mt-6 flex justify-end gap-2"><DialogButton onClick={() => setDialog(null)}>Cancel</DialogButton><DialogButton disabled={busy || !folderName.trim()} primary type="submit">{busy ? "Saving…" : "Save name"}</DialogButton></div>
+              </form>
+            ) : dialog.type === "delete-folder" ? (
+              <>
+                <p className="mt-3 break-words text-sm leading-6 text-slate-400">Delete <span className="font-medium text-slate-200">{dialog.folder.name}</span>? Folders must be empty before they can be deleted.</p>
+                <div className="mt-6 flex justify-end gap-2"><DialogButton disabled={busy} onClick={() => setDialog(null)}>Cancel</DialogButton><DialogButton danger disabled={busy} onClick={() => runFolderAction(() => deleteFolder(dialog.folder.id))}>{busy ? "Deleting…" : "Delete folder"}</DialogButton></div>
+              </>
+            ) : dialog.type === "rename" ? (
               <form className="mt-5" onSubmit={submitRename}>
                 <label className="mb-2 block text-sm text-slate-300" htmlFor="rename-file">File name</label>
                 <div className="flex items-center gap-2">
@@ -490,6 +714,136 @@ function CategoryGlyph({ category }: { category: FileCategory }) {
   return <span aria-hidden="true" className="w-4 text-center text-xs">{category === "favorites" ? "☆" : category === "images" ? "▧" : category === "documents" || category === "pdf" ? "▤" : category === "videos" ? "▷" : category === "audio" ? "♫" : "◫"}</span>;
 }
 
+function FolderTreeList({ folders, currentFolderId, onOpen, onDrop, depth = 0 }: {
+  folders: FolderTreeNode[];
+  currentFolderId: string | null;
+  onOpen: (folderId: string) => void;
+  onDrop: (folderId: string | null) => void;
+  depth?: number;
+}) {
+  return (
+    <>
+      {folders.map((folder) => (
+        <div key={folder.id}>
+          <button
+            aria-current={currentFolderId === folder.id ? "page" : undefined}
+            className={`flex min-h-9 w-full items-center gap-2 rounded-lg pr-2 text-left text-xs transition ${currentFolderId === folder.id ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`}
+            onClick={() => onOpen(folder.id)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(folder.id); }}
+            style={{ paddingLeft: `${12 + Math.min(depth, 8) * 12}px` }}
+            type="button"
+          >
+            <FolderGlyph color={folder.color} icon={folder.icon} />
+            <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+          </button>
+          {folder.children.length ? <FolderTreeList currentFolderId={currentFolderId} depth={depth + 1} folders={folder.children} onDrop={onDrop} onOpen={onOpen} /> : null}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function FolderGlyph({ color, icon }: { color: string; icon: string }) {
+  const colors: Record<string, string> = {
+    blue: "text-blue-300 bg-blue-400/10",
+    violet: "text-violet-300 bg-violet-400/10",
+    amber: "text-amber-300 bg-amber-400/10",
+    emerald: "text-emerald-300 bg-emerald-400/10",
+    rose: "text-rose-300 bg-rose-400/10",
+    slate: "text-slate-300 bg-slate-400/10",
+  };
+  const iconText: Record<string, string> = { folder: "▰", briefcase: "▣", image: "▧", document: "▤", star: "☆" };
+  return <span aria-hidden="true" className={`inline-flex size-9 shrink-0 items-center justify-center rounded-xl text-base ${colors[color] ?? colors.blue}`}>{iconText[icon] ?? iconText.folder}</span>;
+}
+
+function EmptyFiles({ query, category, onUpload, onCreateFolder }: { query: string; category: FileCategory; onUpload: () => void; onCreateFolder?: () => void }) {
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.02] px-6 py-16 text-center">
+      <span className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-blue-400/10 text-blue-300"><StatIcon kind="files" /></span>
+      <h3 className="mt-5 text-base font-semibold text-white">{query ? "No results found" : category === "favorites" ? "No favorites yet" : "This folder is empty"}</h3>
+      <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">{query ? "Try another folder or file name." : category === "favorites" ? "Mark files as favorites to find them here." : "Create a folder or upload files to organize your workspace."}</p>
+      {!query && category === "all" ? <div className="mt-5 flex justify-center gap-3"><button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/5" onClick={onCreateFolder} type="button">Create folder</button><button className="rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400" onClick={onUpload} type="button">Upload a file</button></div> : null}
+    </div>
+  );
+}
+
+function FolderCard({ folder, onOpen, onRename, onDelete, onDragStart, onDragEnd, onDrop }: {
+  folder: FolderView;
+  onOpen: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
+}) {
+  const [menu, setMenu] = useState(false);
+  const [contextPoint, setContextPoint] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextPoint) return;
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setContextPoint(null); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [contextPoint]);
+
+  return (
+    <article
+      className="group relative cursor-pointer rounded-2xl border border-white/8 bg-white/[0.025] p-4 transition duration-200 hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.045] focus-visible:outline-2 focus-visible:outline-blue-400"
+      draggable
+      onContextMenu={(event) => { event.preventDefault(); setContextPoint({ x: event.clientX, y: event.clientY }); }}
+      onDoubleClick={onOpen}
+      onDragEnd={onDragEnd}
+      onDragOver={(event) => event.preventDefault()}
+      onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", folder.id); onDragStart(); }}
+      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") { event.preventDefault(); onOpen(); }
+        else if (event.key === "F2") { event.preventDefault(); onRename(); }
+        else if (event.key === "Delete") { event.preventDefault(); onDelete(); }
+        else if (["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) {
+          event.preventDefault();
+          const cards = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>("[data-folder-card='true']") ?? []);
+          const index = cards.indexOf(event.currentTarget);
+          const direction = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+          cards[(index + direction + cards.length) % cards.length]?.focus();
+        }
+      }}
+      onMouseLeave={() => setMenu(false)}
+      onClick={() => { if (menu) setMenu(false); else onOpen(); }}
+      role="button"
+      tabIndex={0}
+      data-folder-card="true"
+      title="Double-click or press Enter to open"
+    >
+      <div className="flex items-center gap-3">
+        <FolderGlyph color={folder.color} icon={folder.icon} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-slate-100">{folder.name}</p>
+          <p className="mt-1 text-xs text-slate-500">{folder.childCount} folders · {folder.fileCount} files</p>
+        </div>
+        <button aria-expanded={menu} aria-label={`Actions for ${folder.name}`} className="flex size-8 items-center justify-center rounded-lg text-slate-500 opacity-100 transition hover:bg-white/8 hover:text-white sm:opacity-0 sm:group-hover:opacity-100" onClick={(event) => { event.stopPropagation(); setMenu((value) => !value); }} onKeyDown={(event) => event.stopPropagation()} type="button">•••</button>
+      </div>
+      {menu ? (
+        <div className="absolute right-3 top-12 z-20 w-40 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+          <MenuButton onClick={onOpen}>Open</MenuButton>
+          <MenuButton onClick={onRename}>Rename</MenuButton>
+          <MenuButton danger onClick={onDelete}>Delete</MenuButton>
+        </div>
+      ) : null}
+      {contextPoint ? (
+        <div className="fixed inset-0 z-40" onClick={() => setContextPoint(null)}>
+          <div className="fixed z-50 w-40 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl" onClick={(event) => event.stopPropagation()} style={{ left: contextPoint.x, top: contextPoint.y }}>
+            <MenuButton onClick={() => { setContextPoint(null); onOpen(); }}>Open folder</MenuButton>
+            <MenuButton onClick={() => { setContextPoint(null); onRename(); }}>Rename</MenuButton>
+            <MenuButton danger onClick={() => { setContextPoint(null); onDelete(); }}>Delete</MenuButton>
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 function StatCard({ icon, label, value, detail }: { icon: "storage" | "files" | "favorites" | "average"; label: string; value: string; detail: string }) {
   return (
     <article className="rounded-2xl border border-white/8 bg-white/[0.025] p-5 transition hover:border-white/12 hover:bg-white/[0.04]">
@@ -503,15 +857,17 @@ function StatCard({ icon, label, value, detail }: { icon: "storage" | "files" | 
   );
 }
 
-function FileRow({ file, onFavorite, onRename, onDelete, onDetails }: {
+function FileRow({ file, onFavorite, onRename, onDelete, onDetails, onDragStart, onDragEnd }: {
   file: FileRecordView;
   onFavorite: () => void;
   onRename: () => void;
   onDelete: () => void;
   onDetails: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
 }) {
   return (
-    <li className="grid grid-cols-1 gap-3 px-4 py-4 transition hover:bg-white/[0.025] sm:px-5 md:grid-cols-[minmax(220px,1fr)_110px_100px_130px_150px] md:items-center md:gap-4">
+    <li className="grid grid-cols-1 gap-3 px-4 py-4 transition hover:bg-white/[0.025] sm:px-5 md:grid-cols-[minmax(220px,1fr)_110px_100px_130px_150px] md:items-center md:gap-4" draggable onDragEnd={onDragEnd} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", file.id); onDragStart(); }}>
       <div className="flex min-w-0 items-center gap-3">
         <FileGlyph extension={file.extension} />
         <div className="min-w-0">
@@ -544,7 +900,7 @@ function FileRow({ file, onFavorite, onRename, onDelete, onDetails }: {
 }
 
 function MenuButton({ children, onClick, danger = false }: { children: ReactNode; onClick: () => void; danger?: boolean }) {
-  return <button className={`block w-full rounded-lg px-3 py-2 text-left text-sm ${danger ? "text-rose-300 hover:bg-rose-400/10" : "text-slate-300 hover:bg-white/5 hover:text-white"}`} onClick={(event) => { onClick(); const details = event.currentTarget.closest("details"); if (details) details.open = false; }} type="button">{children}</button>;
+  return <button className={`block w-full rounded-lg px-3 py-2 text-left text-sm ${danger ? "text-rose-300 hover:bg-rose-400/10" : "text-slate-300 hover:bg-white/5 hover:text-white"}`} onClick={(event) => { event.stopPropagation(); onClick(); const details = event.currentTarget.closest("details"); if (details) details.open = false; }} type="button">{children}</button>;
 }
 
 function DialogButton({ children, onClick, primary = false, danger = false, disabled = false, type = "button" }: {

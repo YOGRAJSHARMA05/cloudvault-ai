@@ -153,6 +153,7 @@ export async function uploadUserFile(
     fileName: entry.name,
     fileSize: entry.size,
     fileType: entry.type,
+    folderId: formData.get("folderId") || null,
   });
   if (!metadata.success) {
     return { success: false, message: "The file must be 25 MB or smaller." };
@@ -160,6 +161,13 @@ export async function uploadUserFile(
 
   let storedName: string | undefined;
   try {
+    if (metadata.data.folderId) {
+      const destination = await prisma.folder.findFirst({
+        where: { id: metadata.data.folderId, userId: user.id },
+        select: { id: true },
+      });
+      if (!destination) return { success: false, message: "Destination folder not found." };
+    }
     const info = getValidatedFileInfo(entry);
     const data = new Uint8Array(await entry.arrayBuffer());
     if (!validateFileSignature(info.extension, data)) {
@@ -170,6 +178,7 @@ export async function uploadUserFile(
     const record = await prisma.file.create({
       data: {
         userId: user.id,
+        folderId: metadata.data.folderId,
         originalName: info.originalName,
         storedName,
         mimeType: info.mimeType,

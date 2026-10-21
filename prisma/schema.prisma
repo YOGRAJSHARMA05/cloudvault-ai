@@ -20,6 +20,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   files         File[]
+  folders       Folder[]
 
   @@index([createdAt])
 }
@@ -74,11 +75,35 @@ model File {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId     String?
+  parentFolder Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
 
   @@unique([userId, storedName])
   @@index([userId, createdAt])
   @@index([userId, isFavorite, createdAt])
   @@index([userId, extension])
+  @@index([userId, folderId, createdAt])
+}
+
+model Folder {
+  id             String   @id @default(cuid())
+  name           String
+  slug           String
+  color          String   @default("blue")
+  icon           String   @default("folder")
+  parentFolderId String?
+  parentKey      String   @default("root")
+  userId         String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentFolder   Folder?  @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: Restrict)
+  childFolders   Folder[] @relation("FolderHierarchy")
+  files          File[]
+
+  @@unique([userId, parentKey, slug])
+  @@index([userId, parentFolderId, name])
+  @@index([userId, updatedAt])
 }
 
 enum UserRole {
