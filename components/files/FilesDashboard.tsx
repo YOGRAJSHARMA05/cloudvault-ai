@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
+import React, {
   useCallback,
   useEffect,
   useRef,
@@ -58,6 +58,7 @@ type DialogState =
   | { type: "create-folder" }
   | { type: "rename-folder"; folder: FolderView }
   | { type: "delete-folder"; folder: FolderView }
+  | { type: "move-folder"; folder: FolderView }
   | { type: "details"; file: FileRecordView }
   | null;
 
@@ -180,6 +181,7 @@ export function FilesDashboard({
   const [folderIcon, setFolderIcon] = useState("folder");
   const [folderActionError, setFolderActionError] = useState("");
   const [draggedItem, setDraggedItem] = useState<{ type: "file" | "folder"; id: string } | null>(null);
+  const [moveFolderDestination, setMoveFolderDestination] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
   const fileInput = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -314,6 +316,11 @@ export function FilesDashboard({
     });
   }
 
+  function submitMoveFolder() {
+    if (dialog?.type !== "move-folder") return;
+    runFolderAction(() => moveFolder({ folderId: dialog.folder.id, parentFolderId: moveFolderDestination }));
+  }
+
   function openFolder(folderId: string | null) {
     setQuery("");
     setShowRecent(false);
@@ -399,7 +406,15 @@ export function FilesDashboard({
             </div>
             <nav aria-label="Folder tree" className="max-h-[38vh] space-y-1 overflow-y-auto">
               <button aria-current={!currentFolderId ? "page" : undefined} className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${!currentFolderId ? "bg-white/5 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => openFolder(null)} type="button">⌂ My Files</button>
-              <FolderTreeList folders={folderTree} currentFolderId={currentFolderId} onOpen={openFolder} onDrop={dropIntoFolder} />
+              <FolderTreeList
+                folders={folderTree}
+                currentFolderId={currentFolderId}
+                onOpen={openFolder}
+                onDrop={dropIntoFolder}
+                onRename={(folder) => { setFolderName(folder.name); setFolderActionError(""); setDialog({ type: "rename-folder", folder }); }}
+                onDelete={(folder) => { setFolderActionError(""); setDialog({ type: "delete-folder", folder }); }}
+                onMove={(folder) => { setMoveFolderDestination(folder.parentFolderId ?? null); setFolderActionError(""); setDialog({ type: "move-folder", folder }); }}
+              />
               <button className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${showRecent ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => {
                 setQuery("");
                 setShowRecent(true);
@@ -547,7 +562,7 @@ export function FilesDashboard({
                   {searchResults.folders.length ? (
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                       {searchResults.folders.map((folder) => (
-                        <FolderCard folder={folder} key={folder.id} onOpen={() => openFolder(folder.id)} onRename={() => { setFolderName(folder.name); setDialog({ type: "rename-folder", folder }); }} onDelete={() => setDialog({ type: "delete-folder", folder })} onDragStart={() => setDraggedItem({ type: "folder", id: folder.id })} onDragEnd={() => setDraggedItem(null)} onDrop={() => dropIntoFolder(folder.id)} />
+                        <FolderCard folder={folder} key={folder.id} onOpen={() => openFolder(folder.id)} onRename={() => { setFolderName(folder.name); setDialog({ type: "rename-folder", folder }); }} onDelete={() => setDialog({ type: "delete-folder", folder })} onMove={() => { setMoveFolderDestination(folder.parentFolderId ?? null); setFolderActionError(""); setDialog({ type: "move-folder", folder }); }} onDragStart={() => setDraggedItem({ type: "folder", id: folder.id })} onDragEnd={() => setDraggedItem(null)} onDrop={() => dropIntoFolder(folder.id)} />
                       ))}
                     </div>
                   ) : null}
@@ -569,6 +584,7 @@ export function FilesDashboard({
                       onOpen={() => openFolder(folder.id)}
                       onRename={() => { setFolderName(folder.name); setDialog({ type: "rename-folder", folder }); }}
                       onDelete={() => setDialog({ type: "delete-folder", folder })}
+                      onMove={() => { setMoveFolderDestination(folder.parentFolderId ?? null); setFolderActionError(""); setDialog({ type: "move-folder", folder }); }}
                       onDragStart={() => setDraggedItem({ type: "folder", id: folder.id })}
                       onDragEnd={() => setDraggedItem(null)}
                       onDrop={() => dropIntoFolder(folder.id)}
@@ -644,13 +660,13 @@ export function FilesDashboard({
       ) : null}
 
       {dialog ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
-          <section aria-labelledby="file-dialog-title" aria-modal="true" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101827] p-6 shadow-2xl" role="dialog" onKeyDown={(event) => { if (event.key === "Escape") setDialog(null); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) { setDialog(null); setFolderActionError(""); } }}>
+          <section aria-labelledby="file-dialog-title" aria-modal="true" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101827] p-6 shadow-2xl" role="dialog" onKeyDown={(event) => { if (event.key === "Escape") { setDialog(null); setFolderActionError(""); } }}>
             <div className="flex items-start justify-between gap-4">
-              <h2 className="text-lg font-semibold text-white" id="file-dialog-title">{dialog.type === "rename" ? "Rename file" : dialog.type === "delete" ? "Delete file?" : dialog.type === "create-folder" ? "Create a folder" : dialog.type === "rename-folder" ? "Rename folder" : dialog.type === "delete-folder" ? "Delete folder?" : "File information"}</h2>
-              <button aria-label="Close dialog" className="rounded-lg px-2 py-1 text-slate-500 hover:bg-white/5 hover:text-white" onClick={() => setDialog(null)} type="button">×</button>
+              <h2 className="text-lg font-semibold text-white" id="file-dialog-title">{dialog.type === "rename" ? "Rename file" : dialog.type === "delete" ? "Delete file?" : dialog.type === "create-folder" ? "Create a folder" : dialog.type === "rename-folder" ? "Rename folder" : dialog.type === "delete-folder" ? "Delete folder?" : dialog.type === "move-folder" ? "Move folder" : "File information"}</h2>
+              <button aria-label="Close dialog" className="rounded-lg px-2 py-1 text-slate-500 hover:bg-white/5 hover:text-white" onClick={() => { setDialog(null); setFolderActionError(""); }} type="button">×</button>
             </div>
-            {folderActionError && (dialog.type === "create-folder" || dialog.type === "rename-folder" || dialog.type === "delete-folder") ? <p aria-live="polite" className="mt-4 rounded-xl border border-rose-400/20 bg-rose-400/5 px-3 py-2.5 text-sm text-rose-200" role="alert">{folderActionError}</p> : null}
+            {folderActionError && (dialog.type === "create-folder" || dialog.type === "rename-folder" || dialog.type === "delete-folder" || dialog.type === "move-folder") ? <p aria-live="polite" className="mt-4 rounded-xl border border-rose-400/20 bg-rose-400/5 px-3 py-2.5 text-sm text-rose-200" role="alert">{folderActionError}</p> : null}
 
             {dialog.type === "create-folder" ? (
               <form className="mt-5 space-y-4" onSubmit={submitCreateFolder}>
@@ -673,6 +689,30 @@ export function FilesDashboard({
                 <p className="mt-3 break-words text-sm leading-6 text-slate-400">Delete <span className="font-medium text-slate-200">{dialog.folder.name}</span>? Folders must be empty before they can be deleted.</p>
                 <div className="mt-6 flex justify-end gap-2"><DialogButton disabled={busy} onClick={() => setDialog(null)}>Cancel</DialogButton><DialogButton danger disabled={busy} onClick={() => runFolderAction(() => deleteFolder(dialog.folder.id))}>{busy ? "Deleting…" : "Delete folder"}</DialogButton></div>
               </>
+            ) : dialog.type === "move-folder" ? (
+              <div className="mt-5">
+                <p className="mb-3 text-sm text-slate-400">Move <span className="font-medium text-slate-200">{dialog.folder.name}</span> to:</p>
+                <div className="max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950 p-2">
+                  <button
+                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${moveFolderDestination === null ? "bg-blue-500/20 text-blue-200" : "text-slate-300 hover:bg-white/5"}`}
+                    onClick={() => setMoveFolderDestination(null)}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className="text-base">⌂</span>
+                    My Files (root)
+                  </button>
+                  <FolderPickerTree
+                    excludeId={dialog.folder.id}
+                    folders={folderTree}
+                    onSelect={setMoveFolderDestination}
+                    selectedId={moveFolderDestination}
+                  />
+                </div>
+                <div className="mt-6 flex justify-end gap-2">
+                  <DialogButton onClick={() => setDialog(null)}>Cancel</DialogButton>
+                  <DialogButton disabled={busy} primary onClick={submitMoveFolder}>{busy ? "Moving…" : "Move here"}</DialogButton>
+                </div>
+              </div>
             ) : dialog.type === "rename" ? (
               <form className="mt-5" onSubmit={submitRename}>
                 <label className="mb-2 block text-sm text-slate-300" htmlFor="rename-file">File name</label>
@@ -714,37 +754,126 @@ function CategoryGlyph({ category }: { category: FileCategory }) {
   return <span aria-hidden="true" className="w-4 text-center text-xs">{category === "favorites" ? "☆" : category === "images" ? "▧" : category === "documents" || category === "pdf" ? "▤" : category === "videos" ? "▷" : category === "audio" ? "♫" : "◫"}</span>;
 }
 
-function FolderTreeList({ folders, currentFolderId, onOpen, onDrop, depth = 0 }: {
+function FolderTreeList({ folders, currentFolderId, onOpen, onDrop, onRename, onDelete, onMove, depth = 0 }: {
   folders: FolderTreeNode[];
   currentFolderId: string | null;
   onOpen: (folderId: string) => void;
   onDrop: (folderId: string | null) => void;
+  onRename: (folder: FolderView) => void;
+  onDelete: (folder: FolderView) => void;
+  onMove: (folder: FolderView) => void;
   depth?: number;
 }) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [contextMenu, setContextMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+    return () => window.removeEventListener("click", close);
+  }, [contextMenu]);
+
+  function toggleExpand(id: string, event: React.MouseEvent) {
+    event.stopPropagation();
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
     <>
-      {folders.map((folder) => (
-        <div key={folder.id}>
-          <button
-            aria-current={currentFolderId === folder.id ? "page" : undefined}
-            className={`flex min-h-9 w-full items-center gap-2 rounded-lg pr-2 text-left text-xs transition ${currentFolderId === folder.id ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`}
-            onClick={() => onOpen(folder.id)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(folder.id); }}
-            style={{ paddingLeft: `${12 + Math.min(depth, 8) * 12}px` }}
-            type="button"
-          >
-            <FolderGlyph color={folder.color} icon={folder.icon} />
-            <span className="min-w-0 flex-1 truncate">{folder.name}</span>
-          </button>
-          {folder.children.length ? <FolderTreeList currentFolderId={currentFolderId} depth={depth + 1} folders={folder.children} onDrop={onDrop} onOpen={onOpen} /> : null}
-        </div>
-      ))}
+      {folders.map((folder) => {
+        const hasChildren = folder.children.length > 0;
+        const isExpanded = expandedIds.has(folder.id);
+        const isActive = currentFolderId === folder.id;
+        const contextFolder = folders.find((f) => f.id === contextMenu?.folderId);
+
+        return (
+          <div key={folder.id}>
+            <div
+              className={`group flex min-h-9 w-full items-center rounded-lg pr-1 transition ${isActive ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`}
+              style={{ paddingLeft: `${8 + Math.min(depth, 8) * 12}px` }}
+              onContextMenu={(event) => { event.preventDefault(); setContextMenu({ folderId: folder.id, x: event.clientX, y: event.clientY }); }}
+            >
+              {/* Chevron toggle */}
+              <button
+                aria-label={isExpanded ? `Collapse ${folder.name}` : `Expand ${folder.name}`}
+                className={`mr-0.5 flex size-5 shrink-0 items-center justify-center rounded transition hover:bg-white/10 ${hasChildren ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                onClick={(e) => toggleExpand(folder.id, e)}
+                tabIndex={hasChildren ? 0 : -1}
+                type="button"
+              >
+                <svg aria-hidden="true" className={`size-3 transition-transform duration-150 ${isExpanded ? "rotate-90" : "rotate-0"}`} fill="none" viewBox="0 0 24 24">
+                  <path d="M9 6l6 6-6 6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+              </button>
+
+              {/* Folder name button */}
+              <button
+                aria-current={isActive ? "page" : undefined}
+                className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-xs"
+                onClick={() => onOpen(folder.id)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(folder.id); }}
+                type="button"
+              >
+                <FolderGlyph color={folder.color} icon={folder.icon} size="sm" />
+                <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+              </button>
+
+              {/* Inline ••• action button (visible on hover) */}
+              <button
+                aria-label={`Actions for ${folder.name}`}
+                className="flex size-6 shrink-0 items-center justify-center rounded text-slate-600 opacity-0 transition hover:bg-white/10 hover:text-slate-300 group-hover:opacity-100"
+                onClick={(e) => { e.stopPropagation(); setContextMenu({ folderId: folder.id, x: e.clientX, y: e.clientY }); }}
+                type="button"
+              >
+                <svg aria-hidden="true" className="size-3" fill="currentColor" viewBox="0 0 24 24">
+                  <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Context menu */}
+            {contextMenu?.folderId === folder.id && contextFolder ? (
+              <div
+                className="fixed z-50 w-44 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+              >
+                <MenuButton onClick={() => { setContextMenu(null); onOpen(folder.id); }}>Open folder</MenuButton>
+                <MenuButton onClick={() => { setContextMenu(null); onRename(folder); }}>Rename</MenuButton>
+                <MenuButton onClick={() => { setContextMenu(null); onMove(folder); }}>Move to…</MenuButton>
+                <MenuButton danger onClick={() => { setContextMenu(null); onDelete(folder); }}>Delete</MenuButton>
+              </div>
+            ) : null}
+
+            {/* Children */}
+            {hasChildren && isExpanded ? (
+              <FolderTreeList
+                currentFolderId={currentFolderId}
+                depth={depth + 1}
+                folders={folder.children}
+                onDelete={onDelete}
+                onDrop={onDrop}
+                onMove={onMove}
+                onOpen={onOpen}
+                onRename={onRename}
+              />
+            ) : null}
+          </div>
+        );
+      })}
     </>
   );
 }
 
-function FolderGlyph({ color, icon }: { color: string; icon: string }) {
+function FolderGlyph({ color, icon, size = "md" }: { color: string; icon: string; size?: "sm" | "md" }) {
   const colors: Record<string, string> = {
     blue: "text-blue-300 bg-blue-400/10",
     violet: "text-violet-300 bg-violet-400/10",
@@ -753,8 +882,46 @@ function FolderGlyph({ color, icon }: { color: string; icon: string }) {
     rose: "text-rose-300 bg-rose-400/10",
     slate: "text-slate-300 bg-slate-400/10",
   };
-  const iconText: Record<string, string> = { folder: "▰", briefcase: "▣", image: "▧", document: "▤", star: "☆" };
-  return <span aria-hidden="true" className={`inline-flex size-9 shrink-0 items-center justify-center rounded-xl text-base ${colors[color] ?? colors.blue}`}>{iconText[icon] ?? iconText.folder}</span>;
+  const sizeClass = size === "sm" ? "size-5 rounded-md" : "size-9 rounded-xl";
+  const svgClass = size === "sm" ? "size-3" : "size-5";
+
+  const icons: Record<string, React.ReactNode> = {
+    folder: (
+      <svg aria-hidden="true" className={svgClass} fill="none" viewBox="0 0 24 24">
+        <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.379a2 2 0 0 1 1.414.586l1.121 1.121A2 2 0 0 0 12.828 7H18.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.6" />
+      </svg>
+    ),
+    briefcase: (
+      <svg aria-hidden="true" className={svgClass} fill="none" viewBox="0 0 24 24">
+        <rect height="13" rx="2" stroke="currentColor" strokeWidth="1.6" width="18" x="3" y="8" />
+        <path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      </svg>
+    ),
+    image: (
+      <svg aria-hidden="true" className={svgClass} fill="none" viewBox="0 0 24 24">
+        <rect height="16" rx="2" stroke="currentColor" strokeWidth="1.6" width="18" x="3" y="4" />
+        <circle cx="8.5" cy="9" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <path d="m4 17 5-5 3 3 3-4 5 6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      </svg>
+    ),
+    document: (
+      <svg aria-hidden="true" className={svgClass} fill="none" viewBox="0 0 24 24">
+        <path d="M7 3.75h6.5L19 9.25v11A1.75 1.75 0 0 1 17.25 22h-10A1.75 1.75 0 0 1 5.5 20.25v-14A2.5 2.5 0 0 1 8 3.75Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.6" />
+        <path d="M13 4v5h5M8.5 14h7m-7 3h7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      </svg>
+    ),
+    star: (
+      <svg aria-hidden="true" className={svgClass} fill="none" viewBox="0 0 24 24">
+        <path d="m12 3.75 2.55 5.17 5.7.83-4.12 4.02.97 5.68L12 16.77l-5.1 2.68.97-5.68-4.12-4.02 5.7-.83L12 3.75Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.6" />
+      </svg>
+    ),
+  };
+
+  return (
+    <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center ${sizeClass} ${colors[color] ?? colors.blue}`}>
+      {icons[icon] ?? icons.folder}
+    </span>
+  );
 }
 
 function EmptyFiles({ query, category, onUpload, onCreateFolder }: { query: string; category: FileCategory; onUpload: () => void; onCreateFolder?: () => void }) {
@@ -768,11 +935,12 @@ function EmptyFiles({ query, category, onUpload, onCreateFolder }: { query: stri
   );
 }
 
-function FolderCard({ folder, onOpen, onRename, onDelete, onDragStart, onDragEnd, onDrop }: {
+function FolderCard({ folder, onOpen, onRename, onDelete, onMove, onDragStart, onDragEnd, onDrop }: {
   folder: FolderView;
   onOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onMove: () => void;
   onDragStart: () => void;
   onDragEnd: () => void;
   onDrop: () => void;
@@ -828,6 +996,7 @@ function FolderCard({ folder, onOpen, onRename, onDelete, onDragStart, onDragEnd
         <div className="absolute right-3 top-12 z-20 w-40 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl" onClick={(event) => event.stopPropagation()}>
           <MenuButton onClick={onOpen}>Open</MenuButton>
           <MenuButton onClick={onRename}>Rename</MenuButton>
+          <MenuButton onClick={onMove}>Move to…</MenuButton>
           <MenuButton danger onClick={onDelete}>Delete</MenuButton>
         </div>
       ) : null}
@@ -836,6 +1005,7 @@ function FolderCard({ folder, onOpen, onRename, onDelete, onDragStart, onDragEnd
           <div className="fixed z-50 w-40 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl" onClick={(event) => event.stopPropagation()} style={{ left: contextPoint.x, top: contextPoint.y }}>
             <MenuButton onClick={() => { setContextPoint(null); onOpen(); }}>Open folder</MenuButton>
             <MenuButton onClick={() => { setContextPoint(null); onRename(); }}>Rename</MenuButton>
+            <MenuButton onClick={() => { setContextPoint(null); onMove(); }}>Move to…</MenuButton>
             <MenuButton danger onClick={() => { setContextPoint(null); onDelete(); }}>Delete</MenuButton>
           </div>
         </div>
@@ -916,4 +1086,45 @@ function DialogButton({ children, onClick, primary = false, danger = false, disa
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return <div className="flex justify-between gap-4 border-b border-white/5 pb-3 last:border-0"><dt className="shrink-0 text-slate-500">{label}</dt><dd className="break-all text-right text-slate-200">{value}</dd></div>;
+}
+
+function FolderPickerTree({ folders, excludeId, selectedId, onSelect, depth = 0 }: {
+  folders: FolderTreeNode[];
+  excludeId: string;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  depth?: number;
+}) {
+  return (
+    <>
+      {folders.map((folder) => {
+        if (folder.id === excludeId) return null;
+        return (
+          <div key={folder.id}>
+            <button
+              className={`flex w-full items-center gap-2 rounded-lg py-2 pr-3 text-left text-sm transition ${selectedId === folder.id ? "bg-blue-500/20 text-blue-200" : "text-slate-300 hover:bg-white/5"}`}
+              onClick={() => onSelect(folder.id)}
+              style={{ paddingLeft: `${12 + Math.min(depth, 6) * 14}px` }}
+              type="button"
+            >
+              <FolderGlyph color={folder.color} icon={folder.icon} />
+              <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+              {folder.children.filter((c) => c.id !== excludeId).length > 0 && (
+                <span aria-hidden="true" className="shrink-0 text-[10px] text-slate-600">▼</span>
+              )}
+            </button>
+            {folder.children.length > 0 && (
+              <FolderPickerTree
+                depth={depth + 1}
+                excludeId={excludeId}
+                folders={folder.children}
+                onSelect={onSelect}
+                selectedId={selectedId}
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
 }
