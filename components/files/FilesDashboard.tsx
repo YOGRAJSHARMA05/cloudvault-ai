@@ -1057,7 +1057,13 @@ function FileRow({ file, onFavorite, onRename, onDelete, onDetails, onDragStart,
       <div className="flex min-w-0 items-center gap-3">
         <FileGlyph extension={file.extension} />
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-slate-100" title={file.originalName}>{file.originalName}</p>
+          <Link
+            className="truncate text-sm font-medium text-slate-100 transition hover:text-blue-200"
+            href={`/files/${file.id}/preview`}
+            title={file.originalName}
+          >
+            {file.originalName}
+          </Link>
           <p className="mt-1 text-xs text-slate-500 md:hidden">{file.extension.toUpperCase()} · {formatBytes(file.size)} · {formatDate(file.createdAt)}</p>
         </div>
         {file.isFavorite ? <span aria-label="Favorite" className="text-amber-300" title="Favorite">★</span> : null}
@@ -1067,12 +1073,16 @@ function FileRow({ file, onFavorite, onRename, onDelete, onDetails, onDragStart,
       <span className="hidden text-sm text-slate-400 md:block">{formatDate(file.createdAt)}</span>
       <div className="flex items-center justify-end gap-1">
         <button aria-label={file.isFavorite ? `Remove ${file.originalName} from favorites` : `Add ${file.originalName} to favorites`} className={`flex size-9 items-center justify-center rounded-lg transition hover:bg-white/7 ${file.isFavorite ? "text-amber-300" : "text-slate-500 hover:text-amber-300"}`} onClick={onFavorite} type="button">{file.isFavorite ? "★" : "☆"}</button>
+        <Link aria-label={`Preview ${file.originalName}`} className="flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-white/7 hover:text-blue-200" href={`/files/${file.id}/preview`} title="Preview">
+          <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z" stroke="currentColor" strokeWidth="1.6" /><circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.6" /></svg>
+        </Link>
         <a aria-label={`Download ${file.originalName}`} className="flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-white/7 hover:text-blue-200" href={`/files/${file.id}`} title="Download">
           <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 24 24"><path d="M12 3.5v11m0 0 4-4m-4 4-4-4M5 16v3.25A1.75 1.75 0 0 0 6.75 21h10.5A1.75 1.75 0 0 0 19 19.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" /></svg>
         </a>
         <details className="relative">
           <summary aria-label={`Actions for ${file.originalName}`} className="flex size-9 cursor-pointer list-none items-center justify-center rounded-lg text-slate-500 transition hover:bg-white/7 hover:text-white [&::-webkit-details-marker]:hidden">•••</summary>
           <div className="absolute right-0 top-10 z-20 w-44 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl">
+            <Link className="block rounded-lg px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white" href={`/files/${file.id}/preview`}>Preview</Link>
             <MenuButton onClick={onDetails}>View details</MenuButton>
             <MenuButton onClick={onRename}>Rename</MenuButton>
             <MenuButton onClick={onFavorite}>{file.isFavorite ? "Remove favorite" : "Add to favorites"}</MenuButton>
