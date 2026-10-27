@@ -21,6 +21,7 @@ model User {
   sessions      Session[]
   files         File[]
   folders       Folder[]
+  shareLinks    ShareLink[]
 
   @@index([createdAt])
 }
@@ -71,18 +72,21 @@ model File {
   extension    String
   size         BigInt
   folder       String   @default("/")
-  isFavorite   Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isFavorite   Boolean   @default(false)
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   folderId     String?
-  parentFolder Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  parentFolder Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  shareLinks   ShareLink[]
 
   @@unique([userId, storedName])
   @@index([userId, createdAt])
   @@index([userId, isFavorite, createdAt])
   @@index([userId, extension])
   @@index([userId, folderId, createdAt])
+  @@index([userId, deletedAt, createdAt])
 }
 
 model Folder {
@@ -109,4 +113,22 @@ model Folder {
 enum UserRole {
   USER
   ADMIN
+}
+
+model ShareLink {
+  id        String    @id @default(cuid())
+  fileId    String
+  userId    String
+  token     String    @unique
+  label     String?
+  expiresAt DateTime?
+  maxViews  Int?
+  viewCount Int       @default(0)
+  createdAt DateTime  @default(now())
+  file      File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([fileId])
+  @@index([userId])
 }

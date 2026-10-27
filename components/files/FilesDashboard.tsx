@@ -186,10 +186,18 @@ export function FilesDashboard({
   const fileInput = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const refresh = useCallback(async (nextPage = page) => {
+  const refresh = useCallback(async (nextPage = page, recent = showRecent) => {
     try {
       const [result, nextStats, nextTree] = await Promise.all([
-        getFolderContents({ folderId: currentFolderId, query, category, sort, page: nextPage }),
+        recent
+          ? getRecentFiles().then((recentFiles) => ({
+              files: recentFiles.files,
+              totalFiles: recentFiles.total,
+              folders: [],
+              totalFolders: 0,
+              breadcrumbs: [],
+            }))
+          : getFolderContents({ folderId: currentFolderId, query, category, sort, page: nextPage }),
         getDashboardStats(),
         getFolderTree(),
       ]);
@@ -205,7 +213,7 @@ export function FilesDashboard({
     } catch {
       setListError("Please check your connection and try again.");
     }
-  }, [category, currentFolderId, page, query, sort]);
+  }, [category, currentFolderId, page, query, showRecent, sort]);
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -214,7 +222,16 @@ export function FilesDashboard({
       const nextPage = 1;
       setListError("");
       startTransition(() => {
-        void getFolderContents({ folderId: currentFolderId, query, category, sort, page: nextPage }).then((result) => {
+        const listing = showRecent
+          ? getRecentFiles().then((recentFiles) => ({
+              files: recentFiles.files,
+              totalFiles: recentFiles.total,
+              folders: [],
+              totalFolders: 0,
+              breadcrumbs: [],
+            }))
+          : getFolderContents({ folderId: currentFolderId, query, category, sort, page: nextPage });
+        void listing.then((result) => {
           setFiles(result.files);
           setTotal(result.totalFiles);
           setFolders(result.folders);
@@ -227,7 +244,7 @@ export function FilesDashboard({
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [category, currentFolderId, query, sort]);
+  }, [category, currentFolderId, query, showRecent, sort]);
 
   useEffect(() => {
     if (!query.trim()) {
@@ -405,25 +422,22 @@ export function FilesDashboard({
               <button aria-label="Create folder" className="rounded p-1 text-slate-500 transition hover:bg-white/5 hover:text-white" onClick={() => setDialog({ type: "create-folder" })} type="button">+</button>
             </div>
             <nav aria-label="Folder tree" className="max-h-[38vh] space-y-1 overflow-y-auto">
-              <button aria-current={!currentFolderId ? "page" : undefined} className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${!currentFolderId ? "bg-white/5 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => openFolder(null)} type="button">⌂ My Files</button>
+              <button aria-current={!showRecent && !currentFolderId ? "page" : undefined} className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${!showRecent && !currentFolderId ? "bg-white/5 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => openFolder(null)} type="button">⌂ My Files</button>
               <FolderTreeList
                 folders={folderTree}
-                currentFolderId={currentFolderId}
+                currentFolderId={showRecent ? null : currentFolderId}
                 onOpen={openFolder}
                 onDrop={dropIntoFolder}
                 onRename={(folder) => { setFolderName(folder.name); setFolderActionError(""); setDialog({ type: "rename-folder", folder }); }}
                 onDelete={(folder) => { setFolderActionError(""); setDialog({ type: "delete-folder", folder }); }}
                 onMove={(folder) => { setMoveFolderDestination(folder.parentFolderId ?? null); setFolderActionError(""); setDialog({ type: "move-folder", folder }); }}
               />
-              <button className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${showRecent ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => {
+              <button aria-current={showRecent ? "page" : undefined} className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-xs transition ${showRecent ? "bg-blue-500/10 text-blue-200" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"}`} onClick={() => {
                 setQuery("");
                 setShowRecent(true);
-                startTransition(async () => {
-                  const recent = await getRecentFiles();
-                  setFiles(recent.files);
-                  setTotal(recent.total);
-                  setFolders([]);
-                });
+                if (showRecent) {
+                  startTransition(() => { void refresh(1, true); });
+                }
               }} type="button"><span aria-hidden="true" className="w-4 text-center">◷</span>Recent</button>
             </nav>
           </div>
@@ -448,7 +462,7 @@ export function FilesDashboard({
                 <circle cx="10.8" cy="10.8" r="6.8" stroke="currentColor" strokeWidth="1.7" />
                 <path d="m16 16 4.2 4.2" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
               </svg>
-              <input aria-label="Search files" className="h-10 w-full rounded-xl border border-white/8 bg-white/[0.03] pl-10 pr-4 text-sm text-white outline-none placeholder:text-slate-500 focus:border-blue-400/50" onChange={(event) => setQuery(event.target.value)} placeholder="Search files by name, type, or extension…" value={query} />
+              <input aria-label="Search files" className="h-10 w-full rounded-xl border border-white/8 bg-white/[0.03] pl-10 pr-4 text-sm text-white outline-none placeholder:text-slate-500 focus:border-blue-400/50" onChange={(event) => { setShowRecent(false); setQuery(event.target.value); }} placeholder="Search files by name, type, or extension…" value={query} />
             </div>
             <div className="ml-auto flex items-center gap-3">
               <button className="flex size-10 items-center justify-center rounded-xl border border-white/8 text-slate-400 transition hover:bg-white/5 hover:text-white md:hidden" onClick={() => document.getElementById("mobile-file-search")?.focus()} type="button" aria-label="Search files">
@@ -468,8 +482,8 @@ export function FilesDashboard({
             <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
               <div>
                 <p className="text-sm text-slate-500">Your workspace</p>
-                <h1 className="mt-1 text-3xl font-semibold tracking-tight text-white">{currentFolderName ?? "My files"}</h1>
-                <p className="mt-2 text-sm text-slate-400">A secure home for everything you need.</p>
+                <h1 className="mt-1 text-3xl font-semibold tracking-tight text-white">{showRecent ? "Recent files" : currentFolderName ?? "My files"}</h1>
+                <p className="mt-2 text-sm text-slate-400">{showRecent ? "Everything you touched most recently." : "A secure home for everything you need."}</p>
               </div>
               <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-500 px-4 text-sm font-semibold text-white shadow-lg shadow-blue-950/25 transition hover:bg-blue-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 lg:hidden" onClick={() => fileInput.current?.click()} type="button">
                 <span aria-hidden="true" className="text-lg">+</span> Upload files
@@ -480,8 +494,13 @@ export function FilesDashboard({
             </div>
 
             <nav aria-label="Breadcrumb" className="mt-5 flex flex-wrap items-center gap-2 text-sm">
-              <button className={`rounded-md px-1.5 py-1 transition hover:bg-white/5 ${currentFolderId ? "text-slate-400 hover:text-white" : "font-medium text-white"}`} onClick={() => openFolder(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); dropIntoFolder(null); }} type="button">My Files</button>
-              {breadcrumbs.map((crumb, index) => (
+              <button className={`rounded-md px-1.5 py-1 transition hover:bg-white/5 ${currentFolderId && !showRecent ? "text-slate-400 hover:text-white" : "font-medium text-white"}`} onClick={() => openFolder(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); dropIntoFolder(null); }} type="button">My Files</button>
+              {showRecent ? (
+                <span className="flex items-center gap-2">
+                  <span aria-hidden="true" className="text-slate-600">/</span>
+                  <span aria-current="page" className="rounded-md px-1.5 py-1 font-medium text-white">Recent</span>
+                </span>
+              ) : breadcrumbs.map((crumb, index) => (
                 <span className="flex items-center gap-2" key={crumb.id}>
                   <span aria-hidden="true" className="text-slate-600">/</span>
                   <button aria-current={index === breadcrumbs.length - 1 ? "page" : undefined} className={`rounded-md px-1.5 py-1 transition hover:bg-white/5 ${index === breadcrumbs.length - 1 ? "font-medium text-white" : "text-slate-400 hover:text-white"}`} onClick={() => openFolder(crumb.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); dropIntoFolder(crumb.id); }} type="button">{crumb.name}</button>
@@ -541,23 +560,19 @@ export function FilesDashboard({
                   </p>
                 </div>
                 <div className="flex flex-col gap-3 sm:flex-row">
-                  <input aria-label="Search files" className="h-10 rounded-xl border border-white/8 bg-white/[0.03] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-blue-400/50 md:hidden" id="mobile-file-search" onChange={(event) => setQuery(event.target.value)} placeholder="Search files…" value={query} />
+                  <input aria-label="Search files" className="h-10 rounded-xl border border-white/8 bg-white/[0.03] px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-blue-400/50 md:hidden" id="mobile-file-search" onChange={(event) => { setShowRecent(false); setQuery(event.target.value); }} placeholder="Search files…" value={query} />
                   <label className="sr-only" htmlFor="file-filter">Filter files</label>
                   <select className="h-10 rounded-xl border border-white/8 bg-[#0d1422] px-3 text-sm text-slate-300 outline-none focus:border-blue-400/50" id="file-filter" onChange={(event) => { setShowRecent(false); setCategory(event.target.value as FileCategory); setPage(1); }} value={category}>
                     {categories.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
                   <label className="sr-only" htmlFor="file-sort">Sort files</label>
-                  <select className="h-10 rounded-xl border border-white/8 bg-[#0d1422] px-3 text-sm text-slate-300 outline-none focus:border-blue-400/50" id="file-sort" onChange={(event) => setSort(event.target.value as FileSort)} value={sort}>
+                  <select className="h-10 rounded-xl border border-white/8 bg-[#0d1422] px-3 text-sm text-slate-300 outline-none focus:border-blue-400/50" id="file-sort" onChange={(event) => { setShowRecent(false); setSort(event.target.value as FileSort); }} value={sort}>
                     {sortOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
                 </div>
               </div>
 
-              {showRecent ? (
-                <div className="mt-4 overflow-hidden rounded-2xl border border-white/8 bg-white/[0.02]">
-                  {files.length ? <ul className="divide-y divide-white/[0.055]">{files.map((file) => <FileRow file={file} key={file.id} onDragStart={() => setDraggedItem({ type: "file", id: file.id })} onDragEnd={() => setDraggedItem(null)} onDelete={() => setDialog({ type: "delete", file })} onDetails={() => setDialog({ type: "details", file })} onFavorite={() => runFileAction(() => toggleFileFavorite({ fileId: file.id }))} onRename={() => { setRenameValue(file.originalName.replace(/\.[^.]+$/, "")); setDialog({ type: "rename", file }); }} />)}</ul> : <EmptyFiles category="all" onUpload={() => fileInput.current?.click()} query="" />}
-                </div>
-              ) : query && searchResults ? (
+              {query && searchResults ? (
                 <div aria-label="Combined search results" className="mt-4 space-y-4">
                   {searchResults.folders.length ? (
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -575,7 +590,7 @@ export function FilesDashboard({
                   ) : null}
                   {!searchResults.files.length && !searchResults.folders.length ? <EmptyFiles query={query} category={category} onUpload={() => fileInput.current?.click()} /> : null}
                 </div>
-              ) : !query && folders.length ? (
+              ) : !query && !showRecent && folders.length ? (
                 <div aria-label="Folders" className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {folders.map((folder) => (
                     <FolderCard
@@ -636,11 +651,12 @@ export function FilesDashboard({
                     onCreateFolder={() => { setFolderName(""); setDialog({ type: "create-folder" }); }}
                     onUpload={() => fileInput.current?.click()}
                     query={query}
+                    recent={showRecent}
                   />
                 )}
               </div>
 
-              {totalPages > 1 ? (
+              {totalPages > 1 && !showRecent ? (
                 <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
                   <span>Page {page} of {totalPages}</span>
                   <div className="flex gap-2">
@@ -924,13 +940,13 @@ function FolderGlyph({ color, icon, size = "md" }: { color: string; icon: string
   );
 }
 
-function EmptyFiles({ query, category, onUpload, onCreateFolder }: { query: string; category: FileCategory; onUpload: () => void; onCreateFolder?: () => void }) {
+function EmptyFiles({ query, category, recent = false, onUpload, onCreateFolder }: { query: string; category: FileCategory; recent?: boolean; onUpload: () => void; onCreateFolder?: () => void }) {
   return (
     <div className="rounded-2xl border border-white/8 bg-white/[0.02] px-6 py-16 text-center">
       <span className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-blue-400/10 text-blue-300"><StatIcon kind="files" /></span>
-      <h3 className="mt-5 text-base font-semibold text-white">{query ? "No results found" : category === "favorites" ? "No favorites yet" : "This folder is empty"}</h3>
-      <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">{query ? "Try another folder or file name." : category === "favorites" ? "Mark files as favorites to find them here." : "Create a folder or upload files to organize your workspace."}</p>
-      {!query && category === "all" ? <div className="mt-5 flex justify-center gap-3"><button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/5" onClick={onCreateFolder} type="button">Create folder</button><button className="rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400" onClick={onUpload} type="button">Upload a file</button></div> : null}
+      <h3 className="mt-5 text-base font-semibold text-white">{query ? "No results found" : recent ? "No recent files yet" : category === "favorites" ? "No favorites yet" : "This folder is empty"}</h3>
+      <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">{query ? "Try another folder or file name." : recent ? "Files you upload or update will show up here." : category === "favorites" ? "Mark files as favorites to find them here." : "Create a folder or upload files to organize your workspace."}</p>
+      {!query && category === "all" ? <div className="mt-5 flex justify-center gap-3">{!recent ? <button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/5" onClick={onCreateFolder} type="button">Create folder</button> : null}<button className="rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400" onClick={onUpload} type="button">Upload a file</button></div> : null}
     </div>
   );
 }

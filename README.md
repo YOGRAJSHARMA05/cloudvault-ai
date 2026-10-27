@@ -74,6 +74,8 @@ Auth.js uses encrypted JWT cookie sessions for credentials and Google sign-in, w
 
 The protected `/dashboard` workspace supports per-user uploads, browsing, live search, category filters, sorting, pagination, rename, favorites, details, secure download, and confirmed deletion. Uploads accept PDF, DOC, DOCX, TXT, PNG, JPG/JPEG, and WEBP files up to 25 MB. Files are validated for extension, MIME type, and recognizable file signatures before storage. Each database query is scoped to the signed-in user's ID.
 
+Nested folders are supported alongside files: create, rename, move, breadcrumb navigation, drag-and-drop organization, workspace search across folders and files, and deletion once a folder is empty. Folder names are validated and kept unique within their parent.
+
 Files are stored outside `public/` in `storage/uploads/<user-id>/` so they cannot be fetched without authorization. The default path can be changed with `CLOUDVAULT_STORAGE_DIR`. Persist this directory on the host or mount a durable volume when deploying; a local container filesystem is ephemeral, and local disk is not shared between multiple app instances. For multi-instance/production deployments, use private object storage such as S3 with signed downloads. Storage totals report actual uploaded bytes; no user quota is implied.
 
 ## Roadmap
