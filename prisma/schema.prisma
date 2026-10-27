@@ -132,3 +132,40 @@ model ShareLink {
   @@index([fileId])
   @@index([userId])
 }
+
+model DocumentSummary {
+  id             String   @id @default(cuid())
+  fileId         String   @unique
+  userId         String
+  executiveSummary String  @db.Text
+  keyPoints      Json
+  importantTechnologies Json
+  importantDates Json
+  actionItems    Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId, fileId])
+}
+
+model DocumentMetadata {
+  id            String   @id @default(cuid())
+  fileId        String   @unique
+  userId        String
+  title         String?
+  author        String?
+  pageCount     Int?
+  wordCount     Int?
+  characterCount Int?
+  readingTimeMinutes Int?
+  language      String?
+  headingsCount Int?
+  paragraphsCount Int?
+  fileSize      String?
+  fileType      String?
+  extra         Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, fileId])
+}
