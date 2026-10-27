@@ -3,6 +3,8 @@ import { requireUser } from "@/lib/auth-guard";
 import { prisma } from "@/lib/prisma";
 import { FilePreviewClient } from "@/components/files/preview/FilePreviewClient";
 
+export const instant = false;
+
 type PreviewPageProps = {
   params: Promise<{ fileId: string }>;
 };
