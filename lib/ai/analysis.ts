@@ -30,17 +30,32 @@ export function extractKeywords(text: string, count = 15): string[] {
 }
 
 export function generateSummary(text: string) {
+  if (!text || !text.trim()) {
+    return {
+      executiveSummary: "No readable text could be extracted from this document. You can still download and view the file directly.",
+      keyPoints: ["Unable to extract document content"],
+      importantTechnologies: [],
+      importantDates: [],
+      actionItems: [],
+    };
+  }
   const sentences = text.replace(/\n+/g, " ").split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 20);
   const top = sentences.slice(0, 5);
-  const executiveSummary = top.join(" ").slice(0, 800) || "Summary not available for this document.";
+  const executiveSummary = top.join(" ").slice(0, 800) || "Summary generated from available document content.";
   const keyPoints = sentences.slice(0, 8).map((s) => s.trim().slice(0, 200)).filter(Boolean);
-  const importantTechnologies = extractKeywords(text, 12).filter((k) => /^(React|Next|Node|Prisma|TypeScript|JavaScript|Python|Java|Docker|Kubernetes|AWS|Azure|GCP|AI|ML|API|SQL|Postgres|Mongo|GraphQL|REST)$/i.test(k) || k.length > 4).slice(0, 8);
+  if (keyPoints.length === 0) {
+    keyPoints.push("Document content available for preview and download");
+  }
+  let importantTechnologies = extractKeywords(text, 12).filter((k) => /^(React|Next|Node|Prisma|TypeScript|JavaScript|Python|Java|Docker|Kubernetes|AWS|Azure|GCP|AI|ML|API|SQL|Postgres|Mongo|GraphQL|REST)$/i.test(k) || k.length > 4).slice(0, 8);
+  if (importantTechnologies.length === 0) {
+    importantTechnologies = extractKeywords(text, 6);
+  }
   const importantDates = Array.from(new Set((text.match(/\b(19|20)\d{2}\b/g) || []).map((d) => d)));
   const actionItems = sentences.filter((s) => /must|should|need to|action|todo|complete|review|implement/i.test(s)).slice(0, 5).map((s) => s.trim().slice(0, 150));
   return {
     executiveSummary,
     keyPoints: keyPoints.slice(0, 6),
-    importantTechnologies: importantTechnologies.length ? importantTechnologies : extractKeywords(text, 6),
+    importantTechnologies,
     importantDates: importantDates.slice(0, 5),
     actionItems,
   };

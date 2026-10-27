@@ -36,30 +36,55 @@ export async function POST(request: Request) {
     }
 
     const extracted = await extractDocumentText(session.user.id, fileId);
-    if (!extracted || !extracted.text.trim()) {
-      return NextResponse.json({ error: "Unable to extract text from this document." }, { status: 422 });
+    const text = extracted?.text?.trim() || "";
+    if (!text) {
+      const summary = generateSummary("");
+      try {
+        await prisma.documentSummary.upsert({
+          where: { fileId },
+          create: {
+            fileId,
+            userId: session.user.id,
+            executiveSummary: summary.executiveSummary,
+            keyPoints: summary.keyPoints as any,
+            importantTechnologies: summary.importantTechnologies as any,
+            importantDates: summary.importantDates as any,
+            actionItems: summary.actionItems as any,
+          },
+          update: {
+            executiveSummary: summary.executiveSummary,
+            keyPoints: summary.keyPoints as any,
+            importantTechnologies: summary.importantTechnologies as any,
+            importantDates: summary.importantDates as any,
+            actionItems: summary.actionItems as any,
+          },
+        });
+      } catch {}
+      return NextResponse.json({ cached: false, ...summary });
     }
 
-    const summary = generateSummary(extracted.text);
-    await prisma.documentSummary.upsert({
-      where: { fileId },
-      create: {
-        fileId,
-        userId: session.user.id,
-        executiveSummary: summary.executiveSummary,
-        keyPoints: summary.keyPoints as any,
-        importantTechnologies: summary.importantTechnologies as any,
-        importantDates: summary.importantDates as any,
-        actionItems: summary.actionItems as any,
-      },
-      update: {
-        executiveSummary: summary.executiveSummary,
-        keyPoints: summary.keyPoints as any,
-        importantTechnologies: summary.importantTechnologies as any,
-        importantDates: summary.importantDates as any,
-        actionItems: summary.actionItems as any,
-      },
-    });
+    const summary = generateSummary(text);
+    try {
+      await prisma.documentSummary.upsert({
+        where: { fileId },
+        create: {
+          fileId,
+          userId: session.user.id,
+          executiveSummary: summary.executiveSummary,
+          keyPoints: summary.keyPoints as any,
+          importantTechnologies: summary.importantTechnologies as any,
+          importantDates: summary.importantDates as any,
+          actionItems: summary.actionItems as any,
+        },
+        update: {
+          executiveSummary: summary.executiveSummary,
+          keyPoints: summary.keyPoints as any,
+          importantTechnologies: summary.importantTechnologies as any,
+          importantDates: summary.importantDates as any,
+          actionItems: summary.actionItems as any,
+        },
+      });
+    } catch {}
 
     return NextResponse.json({ cached: false, ...summary });
   } catch {
