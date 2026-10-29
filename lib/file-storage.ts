@@ -1,14 +1,52 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   ALLOWED_FILE_TYPES,
   MAX_FILE_SIZE_BYTES,
 } from "@/constants/files";
+import {
+  checkStorageConnection,
+  createSignedObjectUrl,
+  deleteObject,
+  downloadObject,
+  isSupabaseStorageConfigured,
+  uploadObject,
+} from "@/lib/storage/supabase-storage";
 
-const storageRoot = path.join(process.cwd(), "storage", "uploads");
+const configuredStorageRoot = process.env.CLOUDVAULT_STORAGE_DIR?.trim();
+const storageRoot = configuredStorageRoot
+  ? path.resolve(configuredStorageRoot)
+  : path.join(process.cwd(), "storage", "uploads");
+
+export type StorageBackend = "supabase" | "local";
+
+export function getStorageBackend(): StorageBackend {
+  return isSupabaseStorageConfigured() ? "supabase" : "local";
+}
+
+export function getStorageRoot(): string {
+  return storageRoot;
+}
+
+/**
+ * Lightweight readiness probe for the active storage backend. For local disk it
+ * verifies the directory exists and is writable; for Supabase it checks the
+ * bucket without transferring file data.
+ */
+export async function checkStorageHealth(): Promise<StorageBackend> {
+  if (isSupabaseStorageConfigured()) {
+    await checkStorageConnection();
+    return "supabase";
+  }
+
+  await mkdir(storageRoot, { recursive: true, mode: 0o700 });
+  await access(storageRoot, constants.W_OK | constants.R_OK);
+  return "local";
+}
 
 export class FileStorageError extends Error {
   constructor(message: string) {
@@ -46,7 +84,12 @@ export function getValidatedFileInfo(file: File) {
   if (!allowedType) {
     throw new FileStorageError("This file type is not supported.");
   }
-  if (file.type !== allowedType.mimeType) {
+  const acceptedMimeTypes = [
+    allowedType.mimeType,
+    ...("altMimeTypes" in allowedType ? allowedType.altMimeTypes ?? [] : []),
+  ].map((value) => value.toLowerCase());
+  const browserMimeType = file.type.toLowerCase();
+  if (browserMimeType && !acceptedMimeTypes.includes(browserMimeType)) {
     throw new FileStorageError("The file type does not match its extension.");
   }
 
@@ -78,7 +121,20 @@ export async function storeUserFile(
   userId: string,
   extension: string,
   data: Uint8Array,
+  mimeType = "application/octet-stream",
 ): Promise<string> {
+  if (isSupabaseStorageConfigured()) {
+    try {
+      const storedName = `${randomUUID()}.${extension}`;
+      await uploadObject(userId, storedName, data, mimeType);
+      return storedName;
+    } catch (error) {
+      throw new FileStorageError(
+        error instanceof Error ? error.message : "Could not store the file.",
+      );
+    }
+  }
+
   const directory = getUserStorageDirectory(userId);
   await mkdir(directory, { recursive: true, mode: 0o700 });
 
@@ -112,6 +168,15 @@ export async function readUserFile(
   userId: string,
   storedName: string,
 ): Promise<Buffer> {
+  if (isSupabaseStorageConfigured()) {
+    try {
+      return await downloadObject(userId, storedName);
+    } catch (error) {
+      throw new FileStorageError(
+        error instanceof Error ? error.message : "Could not read the file.",
+      );
+    }
+  }
   return readFile(/*turbopackIgnore: true*/ getStoredFilePath(userId, storedName));
 }
 
@@ -119,7 +184,32 @@ export async function removeUserFile(
   userId: string,
   storedName: string,
 ): Promise<void> {
+  if (isSupabaseStorageConfigured()) {
+    try {
+      await deleteObject(userId, storedName);
+      return;
+    } catch (error) {
+      throw new FileStorageError(
+        error instanceof Error ? error.message : "Could not delete the file.",
+      );
+    }
+  }
   await rm(getStoredFilePath(userId, storedName), { force: true });
+}
+
+export async function createUserFileSignedUrl(
+  userId: string,
+  storedName: string,
+  expiresInSeconds = 300,
+): Promise<string | null> {
+  if (!isSupabaseStorageConfigured()) return null;
+  try {
+    return await createSignedObjectUrl(userId, storedName, expiresInSeconds);
+  } catch (error) {
+    throw new FileStorageError(
+      error instanceof Error ? error.message : "Could not create a signed URL.",
+    );
+  }
 }
 
 export async function moveUserFileToTrash(
@@ -157,6 +247,11 @@ export function validateFileSignature(
   data: Uint8Array,
 ): boolean {
   const bytes = Buffer.from(data);
+  const textExtensions = new Set([
+    "txt", "md", "markdown", "csv", "json", "js", "jsx", "ts", "tsx", "py",
+    "rb", "go", "rs", "java", "c", "h", "cpp", "hpp", "cs", "php", "swift",
+    "kt", "sh", "sql", "html", "css", "scss", "yml", "yaml", "xml", "toml", "ini",
+  ]);
 
   switch (extension) {
     case "pdf":
@@ -173,20 +268,30 @@ export function validateFileSignature(
         bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
         bytes.subarray(8, 12).toString("ascii") === "WEBP"
       );
+    case "gif":
+      return ["GIF87a", "GIF89a"].includes(bytes.subarray(0, 6).toString("ascii"));
+    case "mp4":
+      return bytes.subarray(4, 8).toString("ascii") === "ftyp";
+    case "mp3": {
+      const hasId3 = bytes.subarray(0, 3).toString("ascii") === "ID3";
+      const hasFrameSync = bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0;
+      return hasId3 || hasFrameSync;
+    }
     case "doc":
       return bytes.subarray(0, 8).equals(
         Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
       );
     case "docx":
       return bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
-    case "txt":
-      try {
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        return !text.includes("\u0000");
-      } catch {
-        return false;
-      }
     default:
+      if (textExtensions.has(extension)) {
+        try {
+          const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          return !text.includes("\u0000");
+        } catch {
+          return false;
+        }
+      }
       return false;
   }
 }

@@ -8,20 +8,29 @@ datasource db {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String    @unique
-  emailVerified DateTime?
-  image         String?
-  passwordHash  String?
-  role          UserRole  @default(USER)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  accounts      Account[]
-  sessions      Session[]
-  files         File[]
-  folders       Folder[]
-  shareLinks    ShareLink[]
+  id                String             @id @default(cuid())
+  name              String?
+  email             String             @unique
+  emailVerified     DateTime?
+  image             String?
+  passwordHash      String?
+  role              UserRole           @default(USER)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  accounts          Account[]
+  sessions          Session[]
+  files             File[]
+  folders           Folder[]
+  shareLinks        ShareLink[]
+  documentSummaries DocumentSummary[]
+  documentMetadata  DocumentMetadata[]
+  fileEmbeddings    FileEmbedding[]
+  searchEvents      SearchEvent[]
+  fileTags          FileTag[]
+  documentChunks    DocumentChunk[]
+  chatThreads       ChatThread[]
+  chatMessages      ChatMessage[]
+  aiUsage           AiUsage[]
 
   @@index([createdAt])
 }
@@ -64,22 +73,28 @@ model VerificationToken {
 }
 
 model File {
-  id           String   @id @default(cuid())
-  userId       String
-  originalName String
-  storedName   String
-  mimeType     String
-  extension    String
-  size         BigInt
-  folder       String   @default("/")
-  isFavorite   Boolean   @default(false)
-  deletedAt    DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  folderId     String?
-  parentFolder Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  shareLinks   ShareLink[]
+  id               String            @id @default(cuid())
+  userId           String
+  originalName     String
+  storedName       String
+  mimeType         String
+  extension        String
+  size             BigInt
+  folder           String            @default("/")
+  isFavorite       Boolean           @default(false)
+  deletedAt        DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId         String?
+  parentFolder     Folder?           @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  shareLinks       ShareLink[]
+  documentSummary  DocumentSummary?
+  documentMetadata DocumentMetadata?
+  embedding        FileEmbedding?
+  tags             FileTag[]
+  chunks           DocumentChunk[]
+  chatThreads      ChatThread[]
 
   @@unique([userId, storedName])
   @@index([userId, createdAt])
@@ -90,24 +105,26 @@ model File {
 }
 
 model Folder {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   name           String
   slug           String
-  color          String   @default("blue")
-  icon           String   @default("folder")
+  color          String    @default("blue")
+  icon           String    @default("folder")
   parentFolderId String?
-  parentKey      String   @default("root")
+  parentKey      String    @default("root")
   userId         String
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parentFolder   Folder?  @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: Restrict)
-  childFolders   Folder[] @relation("FolderHierarchy")
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentFolder   Folder?   @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: Restrict)
+  childFolders   Folder[]  @relation("FolderHierarchy")
   files          File[]
 
   @@unique([userId, parentKey, slug])
   @@index([userId, parentFolderId, name])
   @@index([userId, updatedAt])
+  @@index([userId, deletedAt])
 }
 
 enum UserRole {
@@ -116,56 +133,173 @@ enum UserRole {
 }
 
 model ShareLink {
-  id        String    @id @default(cuid())
-  fileId    String
-  userId    String
-  token     String    @unique
-  label     String?
-  expiresAt DateTime?
-  maxViews  Int?
-  viewCount Int       @default(0)
-  createdAt DateTime  @default(now())
-  file      File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id           String    @id @default(cuid())
+  fileId       String
+  userId       String
+  token        String    @unique
+  label        String?
+  passwordHash String?
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  maxViews     Int?
+  viewCount    Int       @default(0)
+  createdAt    DateTime  @default(now())
+  file         File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([token])
   @@index([fileId])
-  @@index([userId])
+  @@index([userId, revokedAt])
 }
 
 model DocumentSummary {
-  id             String   @id @default(cuid())
-  fileId         String   @unique
-  userId         String
-  executiveSummary String  @db.Text
-  keyPoints      Json
+  id                    String   @id @default(cuid())
+  fileId                String   @unique
+  userId                String
+  executiveSummary      String   @db.Text
+  keyPoints             Json
   importantTechnologies Json
-  importantDates Json
-  actionItems    Json
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  importantDates        Json
+  actionItems           Json
+  provider              String   @default("local")
+  model                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  file                  File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, fileId])
 }
 
 model DocumentMetadata {
-  id            String   @id @default(cuid())
-  fileId        String   @unique
-  userId        String
-  title         String?
-  author        String?
-  pageCount     Int?
-  wordCount     Int?
-  characterCount Int?
+  id                 String   @id @default(cuid())
+  fileId             String   @unique
+  userId             String
+  title              String?
+  author             String?
+  pageCount          Int?
+  wordCount          Int?
+  characterCount     Int?
   readingTimeMinutes Int?
-  language      String?
-  headingsCount Int?
-  paragraphsCount Int?
-  fileSize      String?
-  fileType      String?
-  extra         Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  language           String?
+  headingsCount      Int?
+  paragraphsCount    Int?
+  fileSize           String?
+  fileType           String?
+  extra              Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  file               File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, fileId])
+}
+
+model FileEmbedding {
+  id         String   @id @default(cuid())
+  fileId     String   @unique
+  userId     String
+  vector     Json
+  dimensions Int
+  model      String   @default("hashed-tfidf-v1")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model SearchEvent {
+  id          String   @id @default(cuid())
+  userId      String
+  query       String
+  resultCount Int      @default(0)
+  source      String   @default("workspace")
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model FileTag {
+  id         String   @id @default(cuid())
+  fileId     String
+  userId     String
+  name       String
+  category   String   @default("General")
+  confidence Float    @default(0)
+  source     String   @default("local")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, name])
+  @@index([userId, category])
+}
+
+model DocumentChunk {
+  id         String   @id @default(cuid())
+  fileId     String
+  userId     String
+  chunkIndex Int
+  section    String
+  content    String   @db.Text
+  charStart  Int
+  charEnd    Int
+  vector     Json
+  dimensions Int
+  model      String   @default("hashed-tfidf-v1")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, chunkIndex])
+  @@index([userId, fileId])
+}
+
+model ChatThread {
+  id        String        @id @default(cuid())
+  userId    String
+  fileId    String?
+  title     String        @default("New chat")
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file      File?         @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  messages  ChatMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model ChatMessage {
+  id        String     @id @default(cuid())
+  threadId  String
+  userId    String
+  role      String
+  content   String     @db.Text
+  citations Json?
+  model     String?
+  createdAt DateTime   @default(now())
+  thread    ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+}
+
+model AiUsage {
+  id           String   @id @default(cuid())
+  userId       String
+  kind         String
+  provider     String   @default("local")
+  model        String?
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, kind, createdAt])
 }

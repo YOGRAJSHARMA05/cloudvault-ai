@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { extractDocumentText } from "@/lib/ai/extract-text";
 import { computeStats, detectLanguage } from "@/lib/ai/analysis";
+import { applyRateLimit } from "@/lib/security/http";
 
 const schema = z.object({ fileId: z.string().cuid() });
 
@@ -12,6 +13,9 @@ export async function POST(request: Request) {
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
+
+  const limited = await applyRateLimit(request, `ai:metadata:${session.user.id}`, 30);
+  if (limited) return limited;
 
   try {
     const body = await request.json();

@@ -5,6 +5,20 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
+import { AISummary } from "@/components/files/ai/AIInsights";
+import { SmartKeywords } from "@/components/files/ai/SmartKeywords";
+import { SmartInsights } from "@/components/files/ai/SmartInsights";
+import { DocumentSearch } from "@/components/files/ai/DocumentSearch";
+import { SmartTags } from "@/components/files/ai/SmartTags";
+import { SimilarDocuments } from "@/components/files/ai/SimilarDocuments";
+import { DocumentChat } from "@/components/ai/DocumentChat";
+import { PreviewSkeleton } from "./PreviewStates";
+import { CodePreview } from "./CodePreview";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { CsvPreview } from "./CsvPreview";
+import { JsonPreview } from "./JsonPreview";
+import { DocxPreview } from "./DocxPreview";
+import { MediaPreview } from "./MediaPreview";
 
 type FileData = {
   id: string;
@@ -17,6 +31,14 @@ type FileData = {
   createdAt: string;
   updatedAt: string;
 };
+
+const CODE_EXTENSIONS = new Set([
+  "js", "jsx", "ts", "tsx", "py", "rb", "go", "rs", "java", "c", "h", "cpp",
+  "hpp", "cs", "php", "swift", "kt", "sh", "sql", "html", "css", "scss",
+  "yml", "yaml", "xml", "toml", "ini",
+]);
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
 
 function formatBytes(value: string | bigint | number): string {
   const bytes = typeof value === "bigint" ? Number(value) : Number(value);
@@ -41,17 +63,6 @@ const PdfViewer = dynamic(() => import("./PdfViewer"), {
   ssr: false,
   loading: () => <PreviewSkeleton />,
 });
-
-function PreviewSkeleton() {
-  return (
-    <div className="flex h-full min-h-[400px] w-full items-center justify-center rounded-2xl border border-white/8 bg-white/[0.02]">
-      <div className="flex flex-col items-center gap-3">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-blue-300/30 border-t-blue-300" />
-        <p className="text-sm text-slate-400">Loading preview...</p>
-      </div>
-    </div>
-  );
-}
 
 function TextPreview({ url }: { url: string }) {
   const [text, setText] = useState<string>("");
@@ -99,10 +110,27 @@ function TextPreview({ url }: { url: string }) {
   );
 }
 
+function isPreviewable(extension: string): boolean {
+  return (
+    extension === "pdf" ||
+    extension === "txt" ||
+    extension === "md" ||
+    extension === "markdown" ||
+    extension === "csv" ||
+    extension === "json" ||
+    extension === "docx" ||
+    extension === "mp4" ||
+    extension === "mp3" ||
+    IMAGE_EXTENSIONS.has(extension) ||
+    CODE_EXTENSIONS.has(extension)
+  );
+}
+
 export function FilePreviewClient({ file }: { file: FileData }) {
   const fileUrl = `/files/${file.id}?inline=true`;
+  const downloadUrl = `/files/${file.id}`;
   const ext = file.extension.toLowerCase();
-  const supported = ["pdf", "png", "jpg", "jpeg", "txt"].includes(ext);
+  const supported = isPreviewable(ext);
 
   return (
     <div className="min-h-screen bg-[#080d18] text-white">
@@ -120,7 +148,10 @@ export function FilePreviewClient({ file }: { file: FileData }) {
           </h1>
         </div>
         <div className="flex items-center gap-2">
-          <Button href={fileUrl} variant="secondary">
+          <Button href={`/share?file=${file.id}`} variant="ghost">
+            Share
+          </Button>
+          <Button href={downloadUrl} variant="secondary">
             Download
           </Button>
         </div>
@@ -136,7 +167,7 @@ export function FilePreviewClient({ file }: { file: FileData }) {
                   <p className="mt-2 max-w-sm text-sm text-slate-400">
                     This file type (.{ext}) is not supported for preview. You can download it instead.
                   </p>
-                  <Button className="mt-6" href={fileUrl} variant="primary">
+                  <Button className="mt-6" href={downloadUrl} variant="primary">
                     Download file
                   </Button>
                 </div>
@@ -144,57 +175,70 @@ export function FilePreviewClient({ file }: { file: FileData }) {
                 <PdfViewer url={fileUrl} />
               ) : ext === "txt" ? (
                 <TextPreview url={fileUrl} />
-              ) : ["png", "jpg", "jpeg"].includes(ext) ? (
-                <div className="flex items-center justify-center rounded-2xl border border-white/8 bg-white/[0.02] p-4">
-                  <img
-                    alt={file.originalName}
-                    className="max-h-[70vh] max-w-full rounded-xl object-contain"
-                    src={fileUrl}
-                  />
-                </div>
+              ) : ext === "md" || ext === "markdown" ? (
+                <MarkdownPreview url={fileUrl} />
+              ) : ext === "csv" ? (
+                <CsvPreview url={fileUrl} />
+              ) : ext === "json" ? (
+                <JsonPreview url={fileUrl} />
+              ) : ext === "docx" ? (
+                <DocxPreview downloadUrl={downloadUrl} fileId={file.id} />
+              ) : ext === "mp4" ? (
+                <MediaPreview fileName={file.originalName} kind="video" url={fileUrl} />
+              ) : ext === "mp3" ? (
+                <MediaPreview fileName={file.originalName} kind="audio" url={fileUrl} />
+              ) : IMAGE_EXTENSIONS.has(ext) ? (
+                <MediaPreview fileName={file.originalName} kind="image" url={fileUrl} />
               ) : (
-                <div className="flex min-h-[400px] flex-col items-center justify-center rounded-2xl border border-white/8 bg-white/[0.02] px-6 text-center">
-                  <p className="text-base font-semibold text-white">Preview not available</p>
-                  <p className="mt-2 max-w-sm text-sm text-slate-400">
-                    Unable to preview this file type.
-                  </p>
-                </div>
+                <CodePreview extension={ext} url={fileUrl} />
               )}
             </section>
 
-            <aside className="h-fit rounded-2xl border border-white/8 bg-white/[0.02] p-6">
-              <h2 className="text-base font-semibold text-white">File information</h2>
-              <dl className="mt-4 space-y-3 text-sm">
-                <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
-                  <dt className="text-slate-500">Name</dt>
-                  <dd className="break-all text-right text-slate-200">{file.originalName}</dd>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
-                  <dt className="text-slate-500">Size</dt>
-                  <dd className="text-right text-slate-200">{formatBytes(file.size)}</dd>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
-                  <dt className="text-slate-500">Type</dt>
-                  <dd className="text-right text-slate-200">{file.mimeType}</dd>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
-                  <dt className="text-slate-500">Extension</dt>
-                  <dd className="text-right text-slate-200">.{file.extension}</dd>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
-                  <dt className="text-slate-500">Upload date</dt>
-                  <dd className="text-right text-slate-200">{formatDate(file.createdAt)}</dd>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
-                  <dt className="text-slate-500">Last modified</dt>
-                  <dd className="text-right text-slate-200">{formatDate(file.updatedAt)}</dd>
-                </div>
-                <div className="flex justify-between gap-4">
-                  <dt className="text-slate-500">Folder</dt>
-                  <dd className="text-right text-slate-200">{file.folderName || "/"}</dd>
-                </div>
-              </dl>
+            <aside className="flex h-fit flex-col gap-4">
+              <div className="rounded-2xl border border-white/8 bg-white/[0.02] p-6">
+                <h2 className="text-base font-semibold text-white">File information</h2>
+                <dl className="mt-4 space-y-3 text-sm">
+                  <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
+                    <dt className="text-slate-500">Name</dt>
+                    <dd className="break-all text-right text-slate-200">{file.originalName}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
+                    <dt className="text-slate-500">Size</dt>
+                    <dd className="text-right text-slate-200">{formatBytes(file.size)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
+                    <dt className="text-slate-500">Type</dt>
+                    <dd className="text-right text-slate-200">{file.mimeType}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
+                    <dt className="text-slate-500">Extension</dt>
+                    <dd className="text-right text-slate-200">.{file.extension}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
+                    <dt className="text-slate-500">Upload date</dt>
+                    <dd className="text-right text-slate-200">{formatDate(file.createdAt)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4 border-b border-white/5 pb-3">
+                    <dt className="text-slate-500">Last modified</dt>
+                    <dd className="text-right text-slate-200">{formatDate(file.updatedAt)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-slate-500">Folder</dt>
+                    <dd className="text-right text-slate-200">{file.folderName || "/"}</dd>
+                  </div>
+                </dl>
+              </div>
+              <SmartTags fileId={file.id} key={`tags-${file.id}`} />
+              <SimilarDocuments fileId={file.id} key={`similar-${file.id}`} />
             </aside>
+          </div>
+
+          <div className="mt-6 space-y-4">
+            <DocumentChat fileId={file.id} fileName={file.originalName} />
+            <AISummary fileId={file.id} />
+            <SmartInsights fileId={file.id} fallbackSize={file.size} />
+            <SmartKeywords fileId={file.id} />
+            <DocumentSearch fileId={file.id} />
           </div>
         </Container>
       </main>

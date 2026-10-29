@@ -2,6 +2,7 @@
 
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { FILE_PAGE_SIZE, type FileSort } from "@/constants/files";
 import { ALLOWED_FILE_TYPES } from "@/constants/files";
 import { requireUser } from "@/lib/auth-guard";
@@ -10,6 +11,10 @@ import { getFilePageOffset } from "@/lib/file-validation";
 import { prisma } from "@/lib/prisma";
 import type { FileRecordView } from "@/types/files";
 import type { FolderBreadcrumb, FolderContents, FolderTreeNode, FolderView, WorkspaceSearchResults } from "@/types/folders";
+
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("actions:folders");
 
 const folderSelect = {
   id: true,
@@ -66,7 +71,7 @@ function actionFailure(error: unknown): { success: false; message: string } {
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
     return { success: false, message: "That folder could not be found." };
   }
-  console.error("Folder management action failed", error);
+  log.error("Folder management action failed", error);
   return { success: false, message: "Something went wrong. Please try again." };
 }
 
@@ -96,7 +101,7 @@ export async function createFolder(input: unknown): Promise<{ success: boolean; 
   const { name, parentFolderId, color, icon } = parsed.data;
   if (parentFolderId) {
     const parent = await prisma.folder.findFirst({
-      where: { id: parentFolderId, userId: user.id },
+      where: { id: parentFolderId, userId: user.id, deletedAt: null },
       select: { id: true },
     });
     if (!parent) return { success: false, message: "Parent folder not found." };
@@ -132,7 +137,7 @@ export async function renameFolder(input: unknown): Promise<{ success: boolean; 
     return { success: false, message: parsed.error.issues[0]?.message ?? "Enter a valid folder name." };
   }
   const folder = await prisma.folder.findFirst({
-    where: { id: parsed.data.folderId, userId: user.id },
+    where: { id: parsed.data.folderId, userId: user.id, deletedAt: null },
     select: { id: true },
   });
   if (!folder) return { success: false, message: "That folder could not be found." };
@@ -143,7 +148,7 @@ export async function renameFolder(input: unknown): Promise<{ success: boolean; 
   try {
     await prisma.$transaction(async (transaction) => {
       const changed = await transaction.folder.updateMany({
-        where: { id: parsed.data.folderId, userId: user.id },
+        where: { id: parsed.data.folderId, userId: user.id, deletedAt: null },
         data: { name: parsed.data.name, slug },
       });
       if (!changed.count) throw new Error("Folder ownership changed during rename.");
@@ -155,6 +160,28 @@ export async function renameFolder(input: unknown): Promise<{ success: boolean; 
   }
 }
 
+async function getActiveFolderSubtree(
+  userId: string,
+  folderId: string,
+): Promise<Array<{ id: string; depth: number }>> {
+  return prisma.$queryRaw<Array<{ id: string; depth: number }>>`
+    WITH RECURSIVE descendants(id, depth) AS (
+      SELECT "id", 0 FROM "Folder"
+      WHERE "id" = ${folderId} AND "userId" = ${userId} AND "deletedAt" IS NULL
+      UNION ALL
+      SELECT child."id", descendants.depth + 1
+      FROM "Folder" child
+      INNER JOIN descendants ON child."parentFolderId" = descendants."id"
+      WHERE child."userId" = ${userId} AND descendants.depth < 100
+    )
+    SELECT id, depth FROM descendants ORDER BY depth DESC
+  `;
+}
+
+/**
+ * Moves a folder and everything inside it to the trash. Restoring the folder
+ * from /trash restores its descendant folders and files as well.
+ */
 export async function deleteFolder(input: unknown): Promise<{ success: boolean; message: string }> {
   const user = await requireUser();
   const parsed = folderIdSchema.safeParse(input);
@@ -162,22 +189,44 @@ export async function deleteFolder(input: unknown): Promise<{ success: boolean; 
 
   try {
     const folder = await prisma.folder.findFirst({
-      where: { id: parsed.data, userId: user.id },
+      where: { id: parsed.data, userId: user.id, deletedAt: null },
       select: { id: true },
     });
     if (!folder) return { success: false, message: "That folder could not be found." };
 
-    const deleted = await prisma.folder.deleteMany({
-      where: {
-        id: folder.id,
-        userId: user.id,
-        childFolders: { none: {} },
-        files: { none: {} },
-      },
-    });
-    if (!deleted.count) return { success: false, message: "Move or delete the folder’s contents before deleting it." };
+    const subtree = await getActiveFolderSubtree(user.id, folder.id);
+    const folderIds = subtree.map((row) => row.id);
+    if (!folderIds.length) {
+      return { success: false, message: "That folder could not be found." };
+    }
+
+    const deletedAt = new Date();
+    await prisma.$transaction([
+      prisma.folder.updateMany({
+        where: { id: { in: folderIds }, userId: user.id, deletedAt: null },
+        data: { deletedAt },
+      }),
+      prisma.file.updateMany({
+        where: {
+          userId: user.id,
+          folderId: { in: folderIds },
+          deletedAt: null,
+        },
+        data: { deletedAt },
+      }),
+      prisma.shareLink.updateMany({
+        where: {
+          userId: user.id,
+          revokedAt: null,
+          file: { folderId: { in: folderIds } },
+        },
+        data: { revokedAt: deletedAt },
+      }),
+    ]);
+
     revalidateFolderViews();
-    return { success: true, message: "Folder deleted." };
+    revalidatePath("/trash");
+    return { success: true, message: "Folder moved to trash." };
   } catch (error) {
     return actionFailure(error);
   }
@@ -190,7 +239,7 @@ export async function moveFolder(input: unknown): Promise<{ success: boolean; me
 
   const { folderId, parentFolderId } = parsed.data;
   const folder = await prisma.folder.findFirst({
-    where: { id: folderId, userId: user.id },
+    where: { id: folderId, userId: user.id, deletedAt: null },
     select: { id: true },
   });
   if (!folder) return { success: false, message: "That folder could not be found." };
@@ -199,14 +248,14 @@ export async function moveFolder(input: unknown): Promise<{ success: boolean; me
     const result = await prisma.$transaction(async (transaction) => {
       if (parentFolderId) {
         const parent = await transaction.folder.findFirst({
-          where: { id: parentFolderId, userId: user.id },
+          where: { id: parentFolderId, userId: user.id, deletedAt: null },
           select: { id: true },
         });
         if (!parent) return "missing-parent";
 
         const subtree = await transaction.$queryRaw<Array<{ id: string }>>`
           WITH RECURSIVE descendants(id) AS (
-            SELECT "id" FROM "Folder" WHERE "id" = ${folderId} AND "userId" = ${user.id}
+            SELECT "id" FROM "Folder" WHERE "id" = ${folderId} AND "userId" = ${user.id} AND "deletedAt" IS NULL
             UNION ALL
             SELECT child."id" FROM "Folder" child
             INNER JOIN descendants parent ON child."parentFolderId" = parent."id"
@@ -219,7 +268,7 @@ export async function moveFolder(input: unknown): Promise<{ success: boolean; me
 
       const destinationParentKey = parentFolderId ?? "root";
       const source = await transaction.folder.findFirst({
-        where: { id: folderId, userId: user.id },
+        where: { id: folderId, userId: user.id, deletedAt: null },
         select: { slug: true },
       });
       if (!source) return "missing-folder";
@@ -228,13 +277,14 @@ export async function moveFolder(input: unknown): Promise<{ success: boolean; me
           userId: user.id,
           parentKey: destinationParentKey,
           slug: source.slug,
+          deletedAt: null,
           NOT: { id: folderId },
         },
         select: { id: true },
       });
       if (nameCollision) return "collision";
       const moved = await transaction.folder.updateMany({
-        where: { id: folderId, userId: user.id },
+        where: { id: folderId, userId: user.id, deletedAt: null },
         data: { parentFolderId, parentKey: destinationParentKey },
       });
       return moved.count === 1 ? "moved" : "missing-folder";
@@ -253,7 +303,7 @@ export async function moveFolder(input: unknown): Promise<{ success: boolean; me
 export async function getFolderTree(): Promise<FolderTreeNode[]> {
   const user = await requireUser();
   const folders = await prisma.folder.findMany({
-    where: { userId: user.id },
+    where: { userId: user.id, deletedAt: null },
     select: folderSelect,
     orderBy: [{ name: "asc" }, { id: "asc" }],
   });
@@ -276,12 +326,12 @@ async function getFolderBreadcrumbsForUser(userId: string, folderId: string | nu
   const ancestors = await prisma.$queryRaw<Array<{ id: string; name: string; parentFolderId: string | null }>>`
     WITH RECURSIVE ancestors(id, name, "parentFolderId", depth) AS (
       SELECT "id", "name", "parentFolderId", 0 FROM "Folder"
-      WHERE "id" = ${folderId} AND "userId" = ${userId}
+      WHERE "id" = ${folderId} AND "userId" = ${userId} AND "deletedAt" IS NULL
       UNION ALL
       SELECT parent."id", parent."name", parent."parentFolderId", ancestors.depth + 1
       FROM "Folder" parent
       INNER JOIN ancestors ON parent."id" = ancestors."parentFolderId"
-      WHERE parent."userId" = ${userId} AND ancestors.depth < 100
+      WHERE parent."userId" = ${userId} AND parent."deletedAt" IS NULL AND ancestors.depth < 100
     )
     SELECT id, name, "parentFolderId" FROM ancestors ORDER BY depth DESC
   `;
@@ -306,7 +356,7 @@ export async function getFolderContents(input: unknown): Promise<FolderContents>
 
   if (folderId) {
     const ownedFolder = await prisma.folder.findFirst({
-      where: { id: folderId, userId: user.id },
+      where: { id: folderId, userId: user.id, deletedAt: null },
       select: folderSelect,
     });
     if (!ownedFolder) {
@@ -315,11 +365,11 @@ export async function getFolderContents(input: unknown): Promise<FolderContents>
   }
 
   const folderWhere: Prisma.FolderWhereInput = query
-    ? { userId: user.id }
-    : { userId: user.id, parentFolderId: folderId };
+    ? { userId: user.id, deletedAt: null }
+    : { userId: user.id, parentFolderId: folderId, deletedAt: null };
   const fileWhere: Prisma.FileWhereInput = query
-    ? { userId: user.id }
-    : { userId: user.id, folderId };
+    ? { userId: user.id, deletedAt: null }
+    : { userId: user.id, folderId, deletedAt: null };
   if (category === "favorites") fileWhere.isFavorite = true;
   else if (category === "pdf") fileWhere.extension = "pdf";
   else if (category === "videos") fileWhere.mimeType = { startsWith: "video/" };
@@ -347,7 +397,7 @@ export async function getFolderContents(input: unknown): Promise<FolderContents>
 
   const fileSort = orderByForFiles(sort);
   const currentFolder = folderId
-    ? await prisma.folder.findFirst({ where: { id: folderId, userId: user.id }, select: folderSelect })
+    ? await prisma.folder.findFirst({ where: { id: folderId, userId: user.id, deletedAt: null }, select: folderSelect })
     : null;
   const [folders, fileRows, totalFolders, totalFiles] = await prisma.$transaction([
     prisma.folder.findMany({ where: folderWhere, select: folderSelect, orderBy: [{ name: "asc" }, { id: "asc" }], take: query ? 50 : undefined }),
@@ -372,11 +422,11 @@ export async function moveFileToFolder(input: unknown): Promise<{ success: boole
   if (!parsed.success) return { success: false, message: "Invalid file move." };
   const { fileId, folderId } = parsed.data;
   if (folderId) {
-    const destination = await prisma.folder.findFirst({ where: { id: folderId, userId: user.id }, select: { id: true } });
+    const destination = await prisma.folder.findFirst({ where: { id: folderId, userId: user.id, deletedAt: null }, select: { id: true } });
     if (!destination) return { success: false, message: "Destination folder not found." };
   }
   const moved = await prisma.file.updateMany({
-    where: { id: fileId, userId: user.id },
+    where: { id: fileId, userId: user.id, deletedAt: null },
     data: { folderId },
   });
   if (!moved.count) return { success: false, message: "That file could not be found." };
@@ -391,10 +441,12 @@ export async function searchWorkspace(input: unknown): Promise<WorkspaceSearchRe
   const { query, page } = parsed.data;
   const folderWhere: Prisma.FolderWhereInput = {
     userId: user.id,
+    deletedAt: null,
     name: { contains: query, mode: "insensitive" },
   };
   const fileWhere: Prisma.FileWhereInput = {
     userId: user.id,
+    deletedAt: null,
     OR: [
       { originalName: { contains: query, mode: "insensitive" } },
       { extension: { contains: query.replace(/^\./, ""), mode: "insensitive" } },
@@ -407,6 +459,20 @@ export async function searchWorkspace(input: unknown): Promise<WorkspaceSearchRe
     prisma.folder.count({ where: folderWhere }),
     prisma.file.count({ where: fileWhere }),
   ]);
+  after(async () => {
+    await prisma.searchEvent
+      .create({
+        data: {
+          userId: user.id,
+          query,
+          resultCount: totalFolders + totalFiles,
+          source: "workspace",
+        },
+      })
+      .catch((error: unknown) => {
+        log.error("Failed to record a search event", error);
+      });
+  });
   return {
     folders: folders.map(toFolderView),
     files: files.map(toFileRecord),
@@ -419,12 +485,12 @@ export async function getRecentFiles(): Promise<{ files: FileRecordView[]; total
   const user = await requireUser();
   const [files, total] = await prisma.$transaction([
     prisma.file.findMany({
-      where: { userId: user.id },
+      where: { userId: user.id, deletedAt: null },
       select: fileSelect,
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: FILE_PAGE_SIZE,
     }),
-    prisma.file.count({ where: { userId: user.id } }),
+    prisma.file.count({ where: { userId: user.id, deletedAt: null } }),
   ]);
   return { files: files.map(toFileRecord), total };
 }

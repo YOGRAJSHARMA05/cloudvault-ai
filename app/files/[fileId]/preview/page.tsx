@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { requireUser } from "@/lib/auth-guard";
 import { prisma } from "@/lib/prisma";
 import { FilePreviewClient } from "@/components/files/preview/FilePreviewClient";
@@ -10,11 +11,12 @@ type PreviewPageProps = {
 };
 
 export default async function FilePreviewPage({ params }: PreviewPageProps) {
+  await connection();
   const user = await requireUser();
   const { fileId } = await params;
 
   const file = await prisma.file.findFirst({
-    where: { id: fileId, userId: user.id },
+    where: { id: fileId, userId: user.id, deletedAt: null },
     select: {
       id: true,
       originalName: true,

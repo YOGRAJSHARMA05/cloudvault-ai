@@ -2,19 +2,18 @@
 
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import {
   ALLOWED_FILE_TYPES,
   FILE_PAGE_SIZE,
   type FileSort,
 } from "@/constants/files";
 import { requireUser } from "@/lib/auth-guard";
+import { processFileAnalysis } from "@/lib/ai/process";
 import { prisma } from "@/lib/prisma";
 import {
   FileStorageError,
   getValidatedFileInfo,
-  moveUserFileToTrash,
-  purgeTrashedUserFile,
-  restoreUserFileFromTrash,
   storeUserFile,
   validateFileSignature,
 } from "@/lib/file-storage";
@@ -25,12 +24,17 @@ import {
   listFilesSchema,
   renameFileSchema,
 } from "@/lib/file-validation";
+import { scanFileForMalware, MalwareScanError } from "@/lib/security/malware";
 import type {
   DashboardStats,
   FileActionResult,
   FileListResult,
   FileRecordView,
 } from "@/types/files";
+
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("actions:files");
 
 const fileViewSelect = {
   id: true,
@@ -56,13 +60,13 @@ function toFileView(
 }
 
 function actionError<T = undefined>(error: unknown): FileActionResult<T> {
-  if (error instanceof FileStorageError) {
+  if (error instanceof FileStorageError || error instanceof MalwareScanError) {
     return { success: false, message: error.message };
   }
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
     return { success: false, message: "That file could not be found." };
   }
-  console.error("File management action failed", error);
+  log.error("File management action failed", error);
   return { success: false, message: "Something went wrong. Please try again." };
 }
 
@@ -72,7 +76,7 @@ export async function listUserFiles(input: unknown): Promise<FileListResult> {
   if (!parsed.success) return { files: [], total: 0 };
 
   const { query, category, sort, page } = parsed.data;
-  const where: Prisma.FileWhereInput = { userId: user.id };
+  const where: Prisma.FileWhereInput = { userId: user.id, deletedAt: null };
 
   if (category === "favorites") where.isFavorite = true;
   else if (category === "pdf") where.extension = "pdf";
@@ -125,10 +129,11 @@ export async function listUserFiles(input: unknown): Promise<FileListResult> {
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   const user = await requireUser();
+  const where: Prisma.FileWhereInput = { userId: user.id, deletedAt: null };
   const [aggregate, totalFiles, favoriteFiles] = await Promise.all([
-    prisma.file.aggregate({ where: { userId: user.id }, _sum: { size: true } }),
-    prisma.file.count({ where: { userId: user.id } }),
-    prisma.file.count({ where: { userId: user.id, isFavorite: true } }),
+    prisma.file.aggregate({ where, _sum: { size: true } }),
+    prisma.file.count({ where }),
+    prisma.file.count({ where: { ...where, isFavorite: true } }),
   ]);
   const totalBytes = aggregate._sum.size ?? BigInt(0);
 
@@ -163,7 +168,11 @@ export async function uploadUserFile(
   try {
     if (metadata.data.folderId) {
       const destination = await prisma.folder.findFirst({
-        where: { id: metadata.data.folderId, userId: user.id },
+        where: {
+          id: metadata.data.folderId,
+          userId: user.id,
+          deletedAt: null,
+        },
         select: { id: true },
       });
       if (!destination) return { success: false, message: "Destination folder not found." };
@@ -174,7 +183,13 @@ export async function uploadUserFile(
       return { success: false, message: "The file content does not match its file type." };
     }
 
-    storedName = await storeUserFile(user.id, info.extension, data);
+    await scanFileForMalware(data, info.originalName, info.mimeType);
+    storedName = await storeUserFile(
+      user.id,
+      info.extension,
+      data,
+      info.mimeType,
+    );
     const record = await prisma.file.create({
       data: {
         userId: user.id,
@@ -188,6 +203,12 @@ export async function uploadUserFile(
       select: fileViewSelect,
     });
 
+    after(async () => {
+      await processFileAnalysis(user.id, record.id).catch((error: unknown) => {
+        log.error("Background document processing failed", error);
+      });
+    });
+
     revalidatePath("/dashboard");
     return {
       success: true,
@@ -198,7 +219,7 @@ export async function uploadUserFile(
     if (storedName) {
       const { removeUserFile } = await import("@/lib/file-storage");
       await removeUserFile(user.id, storedName).catch((cleanupError: unknown) => {
-        console.error("Failed to clean up an incomplete upload", cleanupError);
+        log.error("Failed to clean up an incomplete upload", cleanupError);
       });
     }
     return actionError(error);
@@ -214,7 +235,7 @@ export async function renameUserFile(input: unknown): Promise<FileActionResult> 
 
   const { fileId, name } = parsed.data;
   const current = await prisma.file.findFirst({
-    where: { id: fileId, userId: user.id },
+    where: { id: fileId, userId: user.id, deletedAt: null },
     select: { originalName: true, extension: true },
   });
   if (!current) return { success: false, message: "That file could not be found." };
@@ -226,10 +247,11 @@ export async function renameUserFile(input: unknown): Promise<FileActionResult> 
 
   try {
     await prisma.file.updateMany({
-      where: { id: fileId, userId: user.id },
+      where: { id: fileId, userId: user.id, deletedAt: null },
       data: { originalName: finalName },
     });
     revalidatePath("/dashboard");
+    revalidatePath(`/files/${fileId}/preview`);
     return { success: true, message: "File renamed." };
   } catch (error) {
     return actionError(error);
@@ -245,7 +267,9 @@ export async function toggleFileFavorite(input: unknown): Promise<FileActionResu
     const [updated] = await prisma.$queryRaw<Array<{ isFavorite: boolean }>>`
       UPDATE "File"
       SET "isFavorite" = NOT "isFavorite", "updatedAt" = NOW()
-      WHERE "id" = ${parsed.data.fileId} AND "userId" = ${user.id}
+      WHERE "id" = ${parsed.data.fileId}
+        AND "userId" = ${user.id}
+        AND "deletedAt" IS NULL
       RETURNING "isFavorite"
     `;
     if (!updated) return { success: false, message: "That file could not be found." };
@@ -259,42 +283,37 @@ export async function toggleFileFavorite(input: unknown): Promise<FileActionResu
   }
 }
 
+/**
+ * Moves a file to the trash. The database row and stored bytes are preserved so
+ * the file can be restored from /trash.
+ */
 export async function deleteUserFile(input: unknown): Promise<FileActionResult> {
   const user = await requireUser();
   const parsed = fileIdSchema.safeParse(input);
   if (!parsed.success) return { success: false, message: "Invalid file." };
 
   const file = await prisma.file.findFirst({
-    where: { id: parsed.data.fileId, userId: user.id },
-    select: { id: true, storedName: true },
+    where: { id: parsed.data.fileId, userId: user.id, deletedAt: null },
+    select: { id: true },
   });
   if (!file) return { success: false, message: "That file could not be found." };
 
-  let trashPath: string | undefined;
   try {
-    trashPath = await moveUserFileToTrash(user.id, file.storedName);
-    const deleted = await prisma.file.deleteMany({
-      where: { id: file.id, userId: user.id },
-    });
-    if (!deleted.count) {
-      await restoreUserFileFromTrash(user.id, trashPath, file.storedName);
-      trashPath = undefined;
-      return { success: false, message: "That file could not be found." };
-    }
-    await purgeTrashedUserFile(trashPath).catch((cleanupError: unknown) => {
-      console.error("Failed to purge deleted file bytes", cleanupError);
-    });
-    trashPath = undefined;
+    const deletedAt = new Date();
+    await prisma.$transaction([
+      prisma.file.updateMany({
+        where: { id: file.id, userId: user.id, deletedAt: null },
+        data: { deletedAt },
+      }),
+      prisma.shareLink.updateMany({
+        where: { fileId: file.id, userId: user.id, revokedAt: null },
+        data: { revokedAt: deletedAt },
+      }),
+    ]);
     revalidatePath("/dashboard");
-    return { success: true, message: "File deleted." };
+    revalidatePath("/trash");
+    return { success: true, message: "File moved to trash." };
   } catch (error) {
-    if (trashPath) {
-      await restoreUserFileFromTrash(user.id, trashPath, file.storedName).catch(
-        (restoreError: unknown) => {
-          console.error("Failed to restore file after an incomplete delete", restoreError);
-        },
-      );
-    }
     return actionError(error);
   }
 }

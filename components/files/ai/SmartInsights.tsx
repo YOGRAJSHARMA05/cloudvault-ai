@@ -26,34 +26,45 @@ function formatBytes(value: string | null): string {
 
 export function SmartInsights({ fileId, fallbackSize }: { fileId: string; fallbackSize?: string }) {
   const [metadata, setMetadata] = useState<Metadata | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  async function load() {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/api/files/metadata", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Failed to extract insights");
-        return;
-      }
-      setMetadata(data.metadata);
-    } catch {
-      setError("Failed to extract insights");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    load();
-  }, [fileId]); // eslint-disable-line react-hooks/exhaustive-deps
+    let cancelled = false;
+
+    async function run() {
+      try {
+        const res = await fetch("/api/files/metadata", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileId }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(data.error || "Failed to extract insights");
+          return;
+        }
+        setMetadata(data.metadata);
+      } catch {
+        if (!cancelled) setError("Failed to extract insights");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, reloadKey]);
+
+  function retry() {
+    setLoading(true);
+    setError("");
+    setReloadKey((value) => value + 1);
+  }
 
   const items = [
     { label: "Pages", value: metadata?.pageCount?.toString() || "-" },
@@ -74,7 +85,7 @@ export function SmartInsights({ fileId, fallbackSize }: { fileId: string; fallba
           <p className="mt-1 text-xs text-slate-500">Document statistics and metadata</p>
         </div>
         {error ? (
-          <button className="text-sm text-blue-300 hover:text-blue-200" onClick={load} type="button">
+          <button className="text-sm text-blue-300 hover:text-blue-200" onClick={retry} type="button">
             Retry
           </button>
         ) : null}

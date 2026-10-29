@@ -21,7 +21,7 @@ export async function GET(
   }
 
   const file = await prisma.file.findFirst({
-    where: { id: fileId, userId: session.user.id },
+    where: { id: fileId, userId: session.user.id, deletedAt: null },
     select: { storedName: true, originalName: true, mimeType: true, size: true },
   });
   if (!file) {

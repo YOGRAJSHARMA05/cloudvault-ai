@@ -12,6 +12,7 @@ import React, {
   type ReactNode,
 } from "react";
 import {
+  ALLOWED_EXTENSIONS,
   FILE_PAGE_SIZE,
   MAX_FILE_SIZE_BYTES,
   type FileCategory,
@@ -439,6 +440,16 @@ export function FilesDashboard({
                   startTransition(() => { void refresh(1, true); });
                 }
               }} type="button"><span aria-hidden="true" className="w-4 text-center">◷</span>Recent</button>
+
+              <div className="mt-4 space-y-1 border-t border-white/5 pt-3">
+                <span className="block px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">Workspace</span>
+                <WorkspaceLink href="/search" glyph="✦" label="AI search" />
+                <WorkspaceLink href="/chat" glyph="◈" label="AI chat" />
+                <WorkspaceLink href="/share" glyph="⇧" label="Shared links" />
+                <WorkspaceLink href="/analytics" glyph="▥" label="Analytics" />
+                <WorkspaceLink href="/trash" glyph="⌫" label="Trash" />
+                <WorkspaceLink href="/settings" glyph="⚙" label="Settings" />
+              </div>
             </nav>
           </div>
 
@@ -509,7 +520,7 @@ export function FilesDashboard({
             </nav>
 
             <input
-              accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp"
+              accept={ALLOWED_EXTENSIONS.map((extension) => `.${extension}`).join(",")}
               className="sr-only"
               multiple
               onChange={(event) => { if (event.currentTarget.files) uploadFiles(event.currentTarget.files); }}
@@ -542,7 +553,7 @@ export function FilesDashboard({
                 <p className="text-sm text-slate-400">
                   <button className="font-medium text-blue-300 hover:text-blue-200" onClick={() => fileInput.current?.click()} type="button">Click to upload</button>
                   <span> or drag files here</span>
-                  <span className="mt-1 block text-xs text-slate-600">PDF, DOC, DOCX, TXT, PNG, JPG, JPEG, WEBP · up to 25 MB each</span>
+                  <span className="mt-1 block text-xs text-slate-600">PDF, DOCX, text, Markdown, CSV, JSON, images, GIF, MP4, MP3, code · up to 25 MB each</span>
                 </p>
               )}
             </section>
@@ -702,8 +713,8 @@ export function FilesDashboard({
               </form>
             ) : dialog.type === "delete-folder" ? (
               <>
-                <p className="mt-3 break-words text-sm leading-6 text-slate-400">Delete <span className="font-medium text-slate-200">{dialog.folder.name}</span>? Folders must be empty before they can be deleted.</p>
-                <div className="mt-6 flex justify-end gap-2"><DialogButton disabled={busy} onClick={() => setDialog(null)}>Cancel</DialogButton><DialogButton danger disabled={busy} onClick={() => runFolderAction(() => deleteFolder(dialog.folder.id))}>{busy ? "Deleting…" : "Delete folder"}</DialogButton></div>
+                <p className="mt-3 break-words text-sm leading-6 text-slate-400">Move <span className="font-medium text-slate-200">{dialog.folder.name}</span> and everything inside it to the trash? You can restore it later from Trash.</p>
+                <div className="mt-6 flex justify-end gap-2"><DialogButton disabled={busy} onClick={() => setDialog(null)}>Cancel</DialogButton><DialogButton danger disabled={busy} onClick={() => runFolderAction(() => deleteFolder(dialog.folder.id))}>{busy ? "Moving…" : "Move to trash"}</DialogButton></div>
               </>
             ) : dialog.type === "move-folder" ? (
               <div className="mt-5">
@@ -743,10 +754,10 @@ export function FilesDashboard({
               </form>
             ) : dialog.type === "delete" ? (
               <>
-                <p className="mt-3 break-words text-sm leading-6 text-slate-400">This will permanently delete <span className="font-medium text-slate-200">{dialog.file.originalName}</span> and its stored file. This action cannot be undone.</p>
+                <p className="mt-3 break-words text-sm leading-6 text-slate-400">Move <span className="font-medium text-slate-200">{dialog.file.originalName}</span> to the trash? You can restore it later from Trash.</p>
                 <div className="mt-6 flex justify-end gap-2">
                   <DialogButton disabled={busy} onClick={() => setDialog(null)}>Cancel</DialogButton>
-                  <DialogButton danger disabled={busy} onClick={() => runFileAction(() => deleteUserFile({ fileId: dialog.file.id }))}>{busy ? "Deleting…" : "Delete file"}</DialogButton>
+                  <DialogButton danger disabled={busy} onClick={() => runFileAction(() => deleteUserFile({ fileId: dialog.file.id }))}>{busy ? "Moving…" : "Move to trash"}</DialogButton>
                 </div>
               </>
             ) : (
@@ -786,9 +797,13 @@ function FolderTreeList({ folders, currentFolderId, onOpen, onDrop, onRename, on
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     window.addEventListener("click", close);
-    window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-    return () => window.removeEventListener("click", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [contextMenu]);
 
   function toggleExpand(id: string, event: React.MouseEvent) {
@@ -1084,6 +1099,7 @@ function FileRow({ file, onFavorite, onRename, onDelete, onDetails, onDragStart,
           <div className="absolute right-0 top-10 z-20 w-44 rounded-xl border border-white/10 bg-[#111a29] p-1.5 shadow-xl">
             <Link className="block rounded-lg px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white" href={`/files/${file.id}/preview`}>Preview</Link>
             <MenuButton onClick={onDetails}>View details</MenuButton>
+            <Link className="block rounded-lg px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white" href={`/share?file=${file.id}`}>Share link</Link>
             <MenuButton onClick={onRename}>Rename</MenuButton>
             <MenuButton onClick={onFavorite}>{file.isFavorite ? "Remove favorite" : "Add to favorites"}</MenuButton>
             <a className="block rounded-lg px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white" href={`/files/${file.id}`}>Download</a>
@@ -1097,6 +1113,15 @@ function FileRow({ file, onFavorite, onRename, onDelete, onDetails, onDragStart,
 
 function MenuButton({ children, onClick, danger = false }: { children: ReactNode; onClick: () => void; danger?: boolean }) {
   return <button className={`block w-full rounded-lg px-3 py-2 text-left text-sm ${danger ? "text-rose-300 hover:bg-rose-400/10" : "text-slate-300 hover:bg-white/5 hover:text-white"}`} onClick={(event) => { event.stopPropagation(); onClick(); const details = event.currentTarget.closest("details"); if (details) details.open = false; }} type="button">{children}</button>;
+}
+
+function WorkspaceLink({ href, glyph, label }: { href: string; glyph: string; label: string }) {
+  return (
+    <Link className="flex min-h-9 items-center gap-2 rounded-lg px-3 text-left text-xs text-slate-500 transition hover:bg-white/5 hover:text-slate-200" href={href}>
+      <span aria-hidden="true" className="w-4 text-center">{glyph}</span>
+      {label}
+    </Link>
+  );
 }
 
 function DialogButton({ children, onClick, primary = false, danger = false, disabled = false, type = "button" }: {

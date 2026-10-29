@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/auth";
 import { extractDocumentText } from "@/lib/ai/extract-text";
+import { applyRateLimit } from "@/lib/security/http";
 
 const schema = z.object({ fileId: z.string().cuid(), query: z.string().min(1).max(100) });
 
@@ -10,6 +11,9 @@ export async function POST(request: Request) {
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
+
+  const limited = await applyRateLimit(request, `ai:search:${session.user.id}`, 40);
+  if (limited) return limited;
 
   try {
     const body = await request.json();
